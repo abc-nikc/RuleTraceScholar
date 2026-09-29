@@ -14,7 +14,9 @@ does not claim that every future LLM answer is semantically correct.
 - Source: [arXiv:2603.09192](https://arxiv.org/abs/2603.09192)
 - DOI: [10.48550/arXiv.2603.09192](https://doi.org/10.48550/arXiv.2603.09192)
 - arXiv submission date: 2026-03-10
-- Local acceptance copy: `resource/acceptance/arxiv-2603.09192.pdf`
+- Local acceptance copy: `resource/acceptance/arxiv-2603.09192.pdf` (deliberately
+  excluded from Git; download it from the arXiv source above when reproducing
+  this acceptance run)
 - PDF size: 12,135,709 bytes; 15 pages
 - SHA-256: `D3D1880033DD6EE1F6AF47D6526B5115372C3AC55E9BCB08BA77B7140E88F48D`
 
