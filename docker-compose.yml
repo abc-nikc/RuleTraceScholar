@@ -1,0 +1,81 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - MILVUS_URI=http://milvus:19530
+      - POSTGRES_URI=postgresql://postgres:postgres@postgres:5432/ruletrace_scholar
+      - METADATA_BACKEND=postgres
+      - HF_HUB_DISABLE_XET=1
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/data:/app/data
+      - huggingface_cache:/root/.cache/huggingface
+    depends_on:
+      milvus:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.6.24
+    command: ["milvus", "run", "standalone"]
+    environment:
+      DEPLOY_MODE: STANDALONE
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      # Keep the legacy volume declared below as a recoverable backup.  The
+      # previous embedded-etcd state can fail after an interrupted Docker
+      # shutdown, so the active index is rebuilt from the preserved PDFs.
+      - milvus_data_recovered:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ruletrace_scholar
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  # Retained for recovery; do not remove with `docker compose down -v`.
+  milvus_data:
+  milvus_data_recovered:
+  postgres_data:
+  huggingface_cache:

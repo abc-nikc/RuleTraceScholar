@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+uploads/*
+!uploads/.gitkeep
+data/*
+!data/.gitkeep
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/

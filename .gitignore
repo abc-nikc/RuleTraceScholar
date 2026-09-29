@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.pdf
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.env.local
+.venv/
+backend/.env
+
+# Logs
+*.log
+
+# Data
+uploads/*
+!uploads/.gitkeep
+data/
+!data/.gitkeep
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/data/*
+!backend/data/.gitkeep
+pdf/
+*.db
+*.csv
+benchmark/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.codex_work/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Local/reference media not required to run the project
+/demo.gif
+/resource/
+/doc/demo.gif
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
