@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     query: str
     session_id: str | None = None
     paper_ids: list[str] = Field(default_factory=list, max_length=10)
+    thinking: bool = Config.LLM_THINKING
 
 
 def _public_citations(citations: list[dict]) -> list[dict]:
@@ -45,9 +46,9 @@ def _public_citations(citations: list[dict]) -> list[dict]:
     return [{key: value for key, value in citation.items() if key in allowed} for citation in citations]
 
 
-def _build_graph():
+def _build_graph(thinking: bool = False):
     return build_graph(
-        llm=get_llm(),
+        llm=get_llm(thinking),
         retriever=get_retriever_tool(),
         citation_extractor=CitationExtractor,
         max_retries=Config.MAX_RETRIES,
@@ -60,6 +61,7 @@ async def _stream_response(
     query: str,
     session_id: str,
     paper_ids: list[str] | None = None,
+    thinking: bool = False,
 ) -> AsyncGenerator[str, None]:
     config = {"configurable": {"thread_id": session_id}}
     graph_input = {"query": query, "paper_ids": paper_ids or []}
@@ -71,6 +73,7 @@ async def _stream_response(
         synth_msgs = []
         final_citations = []
         final_sub_queries = []
+        direct_answer = ""
         query_type = "general"
         sub_query_count = 1
 
@@ -89,12 +92,15 @@ async def _stream_response(
 
                 if node_name == "prepare_synthesis":
                     synth_msgs = node_output.get("synth_messages", [])
+                    direct_answer = node_output.get("direct_answer", "")
                     final_citations = node_output.get("citations", [])
                     logger.info(f"prepare_synthesis: {len(final_citations)} citations")
 
-        llm = get_llm()
-        answer_buf = ""
-        if synth_msgs:
+        llm = get_llm(thinking)
+        answer_buf = direct_answer
+        if direct_answer:
+            yield json.dumps({"type": "answer", "data": answer_buf})
+        elif synth_msgs:
             async for token in llm.astream(synth_msgs):
                 if token.content:
                     answer_buf += token.content
@@ -115,7 +121,7 @@ async def _stream_response(
             claim.get("requires_evidence") and not claim.get("grounded")
             for claim in explanation.get("claims", [])
         )
-        if Config.AUTO_EVIDENCE_REPAIR and (
+        if thinking and Config.AUTO_EVIDENCE_REPAIR and (
             explanation["decision"] != "supported" or has_unsupported_claims
         ):
             yield json.dumps({"type": "status", "data": "repairing_evidence"})
@@ -151,7 +157,7 @@ async def _stream_response(
 
         public_citations = _public_citations(final_citations)
         claim_tests = run_claim_unit_tests(explanation)
-        if Config.ENABLE_SEMANTIC_AUDIT:
+        if thinking and Config.ENABLE_SEMANTIC_AUDIT:
             yield json.dumps({"type": "status", "data": "auditing_evidence"})
             try:
                 semantic_checks = await run_semantic_evidence_checks(llm, explanation)
@@ -170,6 +176,15 @@ async def _stream_response(
                 claim_tests["decision"] = "fail"
             elif semantic_checks["decision"] == "review" and claim_tests["decision"] == "pass":
                 claim_tests["decision"] = "review"
+        else:
+            claim_tests["semantic_checks"] = {
+                "method": "model-assisted semantic evidence review",
+                "decision": "skipped",
+                "judgements": [],
+                "conflicts": [],
+                "detail": "Enable 深度思考 to run the model-assisted semantic audit.",
+                "limitations": ["Fast mode retains deterministic claim checks but skips the extra model pass."],
+            }
 
         semantic_decision = (claim_tests.get("semantic_checks") or {}).get("decision")
         if (
@@ -210,6 +225,7 @@ async def _stream_response(
             repair=repair,
             runtime={
                 "llm_model": Config.LLM_MODEL,
+                "thinking_mode": "deep" if thinking else "fast",
                 "embedding_model": Config.EMBEDDING_MODEL,
                 "reranker_model": Config.RERANKER_MODEL,
                 "top_k": runtime_settings.retrieval.top_k,
@@ -274,9 +290,9 @@ async def chat(req: ChatRequest):
     if not get_session(session_id):
         create_session(session_id)
 
-    graph = _build_graph()
+    graph = _build_graph(req.thinking)
 
     return EventSourceResponse(
-        _stream_response(graph, req.query, session_id, req.paper_ids),
+        _stream_response(graph, req.query, session_id, req.paper_ids, req.thinking),
         media_type="text/event-stream",
     )

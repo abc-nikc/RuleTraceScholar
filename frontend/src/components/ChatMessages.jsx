@@ -89,7 +89,14 @@ function MessageBubble({ role, content, citations, explanation, claimTests, caps
   );
 }
 
-export default function ChatMessages({ messages, loading, onOpenUpload, onOpenGuide, onOpenDiscovery }) {
+const STATUS_LABELS = {
+  analyzing: '正在分析问题与会话上下文…',
+  searching: '正在检索、重排论文证据并生成回答…',
+  repairing_evidence: '正在补充证据并修复回答…',
+  auditing_evidence: '正在执行语义证据审计…',
+};
+
+export default function ChatMessages({ messages, loading, status, onOpenUpload, onOpenGuide, onOpenDiscovery }) {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
@@ -160,6 +167,7 @@ export default function ChatMessages({ messages, loading, onOpenUpload, onOpenGu
                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]" />
                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]" />
               </div>
+              <p className="mt-2 text-[11px] text-gray-400">{STATUS_LABELS[status] || '正在处理…'}</p>
             </div>
           </div>
         )}

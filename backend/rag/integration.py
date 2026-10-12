@@ -6,9 +6,7 @@ import re
 from typing import Optional, Any
 from docling.document_converter import DocumentConverter
 from langchain_core.documents import Document
-from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import BaseModel, Field
 from .models import PaperNode, NodeType
 from .node_generator import NodeContentGeneratorFactory, TableGenerator
 from .factory import EmbeddingService, MilvusStoreFactory
@@ -16,17 +14,51 @@ from .factory import EmbeddingService, MilvusStoreFactory
 FIGURE_SAVE_DIR = Path("./data/figures")
 
 
-class SectionClassification(BaseModel):
-    classifications: list[dict[str, str]] = Field(description="List of {title, type} mappings")
+def classify_section_title(title: str) -> str:
+    """Deterministic fallback for local models that cannot return structured output.
 
+    Section routing is a retrieval control, so silently labelling an entire paper
+    as ``other`` is worse than using a conservative heading heuristic.
+    """
+    normalized = re.sub(r"^\s*\d+(?:\.\d+)*[.)]?\s*", "", title or "").strip().lower()
+    if not normalized:
+        return "other"
 
-SECTION_CLASSIFIER_PROMPT = """Classify each paper section title into one category:
-- method: describes approach/model/algorithm/architecture/framework
-- experiment: presents results/evaluation/analysis/performance/ablation
-- background: introduction/related work/motivation/literature review
-- conclusion: conclusion/discussion/future work/limitations
-
-Output format: for each title, return {"title": "original title", "type": "category"}"""
+    patterns = (
+        ("experiment", (
+            "experiment", "evaluation", "result", "ablation", "benchmark",
+            "performance", "case study", "implementation", "setup", "statistics",
+            "cost-quality", "human evaluation", "实验", "结果",
+            "消融", "评估", "性能", "案例分析",
+        )),
+        ("method", (
+            "method", "methodology", "approach", "architecture", "framework",
+            "model", "algorithm", "system design", "pipeline", "retrieval",
+            "construction", "inference", "scoring", "verification", "synthesis",
+            "pruning", "provenance", "abstraction", "generation", "complexity",
+            "pseudo-code", "pseudocode", "方法", "模型",
+            "架构", "框架", "算法", "系统设计",
+        )),
+        ("conclusion", (
+            "conclusion", "discussion", "limitation", "future work", "outlook",
+            "threats to validity", "结论", "讨论", "局限", "限制", "未来工作",
+            "展望",
+        )),
+        ("background", (
+            "abstract", "introduction", "background", "motivation", "related work",
+            "preliminar", "literature review", "overview", "摘要", "引言", "背景",
+            "动机", "相关工作", "预备知识", "概述",
+        )),
+    )
+    compact = re.sub(r"[^\w\u4e00-\u9fff]+", "", normalized)
+    for section_type, keywords in patterns:
+        if any(
+            keyword in normalized
+            or re.sub(r"[^\w\u4e00-\u9fff]+", "", keyword) in compact
+            for keyword in keywords
+        ):
+            return section_type
+    return "other"
 
 
 class TextCleaner:
@@ -175,46 +207,13 @@ class PDFParser:
         return filtered
 
     def _sort_reading_order(self, items: list[Any]) -> list[Any]:
-        """Sort items by reading order using bbox coordinates.
-        
-        PDF coordinate system: y increases upward (larger y = higher on page).
-        Strategy: group items at the same vertical band (row), sort rows top-to-bottom,
-        sort items within each row left-to-right. This handles both single and multi-column.
+        """Preserve Docling's document reading order.
+
+        ``iterate_items`` already emits layout-aware reading order. Re-sorting every
+        page by horizontal rows interleaves the left and right columns of academic
+        PDFs, which can attach method text to Related Work and corrupt retrieval.
         """
-        pages = {}
-        for item in items:
-            page_num = item.prov[0].page_no if item.prov and len(item.prov) > 0 else 0
-            if page_num not in pages:
-                pages[page_num] = []
-            pages[page_num].append(item)
-        
-        sorted_items = []
-        for page_num in sorted(pages.keys()):
-            page_items = pages[page_num]
-            
-            items_with_bbox = []
-            for item in page_items:
-                bbox = self._extract_bbox(item)
-                items_with_bbox.append((item, bbox))
-            
-            valid = [(item, bbox) for item, bbox in items_with_bbox if bbox]
-            no_bbox = [(item, bbox) for item, bbox in items_with_bbox if not bbox]
-            
-            if not valid:
-                sorted_items.extend([item for item, _ in items_with_bbox])
-                continue
-            
-            row_tolerance = self._estimate_row_tolerance(valid)
-            rows = self._group_into_rows(valid, row_tolerance)
-            
-            for row in rows:
-                row.sort(key=lambda x: x[1][0])
-            
-            for row in rows:
-                sorted_items.extend([item for item, _ in row])
-            sorted_items.extend([item for item, _ in no_bbox])
-        
-        return sorted_items
+        return list(items)
     
     def _estimate_row_tolerance(self, items_with_bbox: list[tuple]) -> float:
         """Estimate vertical tolerance for grouping items into rows."""
@@ -348,12 +347,9 @@ class PDFParser:
         """Determine if a section header is top-level via numeric prefix or x position."""
         num_match = re.match(r'^(\d+(?:\.\d+)*)\s+', header_text)
         if num_match:
-            dots = len(num_match.group(1).split('.'))
-            if dots > 1:
-                return False
-            if bbox:
-                return bbox[0] <= top_level_x + 10
-            return True
+            # A numbered top-level heading can begin in the right column after
+            # the previous section ends. Horizontal position must not demote it.
+            return len(num_match.group(1).split('.')) == 1
         return True
 
     def _update_section_stack(self, section_stack: list[str], header_text: str, bbox, top_level_x: float):
@@ -515,40 +511,29 @@ class PDFParser:
         fitz_doc.close()
 
     def _classify_sections(self, nodes: list[PaperNode]):
-        """Classify section headers using LLM."""
-        if not self.llm:
-            return
-        
+        """Classify headers deterministically so indexing never depends on an LLM call."""
         section_nodes = [n for n in nodes if n.node_type == "section_header"]
         if not section_nodes:
             return
-        
+
         titles = [n.text.replace("Section: ", "").strip() for n in section_nodes]
-        titles_str = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
-        
-        try:
-            structured_llm = self.llm.with_structured_output(SectionClassification)
-            result = structured_llm.invoke([
-                SystemMessage(content=SECTION_CLASSIFIER_PROMPT),
-                HumanMessage(content=f"Section titles:\n{titles_str}")
-            ])
-            
-            title_to_type = {c["title"]: c["type"] for c in result.classifications}
-            
-            for node in section_nodes:
-                title = node.text.replace("Section: ", "").strip()
-                section_type = title_to_type.get(title, "other")
-                node.metadata["section_type"] = section_type
-            
-            for node in nodes:
-                if node.node_type != "section_header" and node.section_path:
-                    for section_node in section_nodes:
-                        section_title = section_node.text.replace("Section: ", "").strip()
-                        if section_title in node.section_path:
-                            node.metadata["section_type"] = section_node.metadata.get("section_type", "other")
-                            break
-        except Exception as e:
-            print(f"Section classification failed: {e}")
+        title_to_type = {title: classify_section_title(title) for title in titles}
+
+        section_type_by_title = {}
+        for node in section_nodes:
+            title = node.text.replace("Section: ", "").strip()
+            section_type = title_to_type.get(title, classify_section_title(title))
+            node.metadata["section_type"] = section_type
+            section_type_by_title[title] = section_type
+
+        for node in nodes:
+            if node.node_type == "section_header":
+                continue
+            node.metadata["section_type"] = "other"
+            for section_title in reversed(node.section_path):
+                if section_title in section_type_by_title:
+                    node.metadata["section_type"] = section_type_by_title[section_title]
+                    break
 
 
 class RAGIntegration:

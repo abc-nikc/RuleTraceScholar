@@ -35,6 +35,10 @@ class Config:
     LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+    LLM_FAST_MAX_TOKENS = int(os.getenv("LLM_FAST_MAX_TOKENS", "1024"))
+    # Qwen3 enables long hidden reasoning by default in Ollama. Disable it for
+    # interactive RAG unless a deployment explicitly opts in.
+    LLM_THINKING = os.getenv("LLM_THINKING", "false").lower() == "true"
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", "2"))
 
     VLM_ENABLED = os.getenv("VLM_ENABLED", "false").lower() == "true"

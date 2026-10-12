@@ -46,6 +46,7 @@ class AgentState(TypedDict):
     answer: str
     citations: Annotated[list[dict], merge_citations]
     synth_messages: list[AnyMessage]
+    direct_answer: str
 
 
 class SubAgentState(TypedDict):

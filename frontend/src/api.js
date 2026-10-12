@@ -1,13 +1,27 @@
 const BASE = '/api';
 
+async function jsonOrThrow(res, fallback) {
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const detail = data?.detail?.message || data?.detail || data?.message;
+    throw new Error(typeof detail === 'string' ? detail : fallback);
+  }
+  return data;
+}
+
 export async function fetchSessions() {
   const res = await fetch(`${BASE}/sessions`);
-  return res.json();
+  return jsonOrThrow(res, 'Unable to load conversations');
 }
 
 export async function fetchHistory(sessionId) {
   const res = await fetch(`${BASE}/sessions/${sessionId}/history`);
-  return res.json();
+  return jsonOrThrow(res, 'Unable to restore conversation history');
 }
 
 export async function deleteSession(sessionId) {
@@ -134,18 +148,31 @@ export async function resetSessionMemory(sessionId) {
   return data;
 }
 
-export function streamChat(query, sessionId, onEvent, paperIds = []) {
+export function streamChat(query, sessionId, onEvent, paperIds = [], thinking = false) {
   const ctrl = new AbortController();
 
   fetch(`${BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, session_id: sessionId, paper_ids: paperIds }),
+    body: JSON.stringify({ query, session_id: sessionId, paper_ids: paperIds, thinking }),
     signal: ctrl.signal,
   }).then(async (res) => {
+    if (!res.ok) {
+      let detail = `Chat request failed (${res.status})`;
+      try {
+        const body = await res.json();
+        detail = body?.detail?.message || body?.detail || detail;
+      } catch {
+        // Keep the HTTP status message when the response is not JSON.
+      }
+      throw new Error(typeof detail === 'string' ? detail : `Chat request failed (${res.status})`);
+    }
+    if (!res.body) throw new Error('Chat stream is unavailable');
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
+    let completed = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -159,15 +186,20 @@ export function streamChat(query, sessionId, onEvent, paperIds = []) {
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith('data:')) continue;
         const raw = trimmed.slice(5).trim();
-        if (raw === '[DONE]') continue;
+        if (raw === '[DONE]') {
+          completed = true;
+          continue;
+        }
         try {
           const evt = JSON.parse(raw);
+          if (evt.type === 'done' || evt.type === 'error') completed = true;
           onEvent(evt);
         } catch {
           // Ignore a malformed SSE frame and continue reading the stream.
         }
       }
     }
+    if (!completed) onEvent({ type: 'error', data: 'The answer stream ended before it was saved. Please retry.' });
   }).catch((err) => {
     if (err.name !== 'AbortError') {
       onEvent({ type: 'error', data: err.message });

@@ -13,12 +13,32 @@ from .prompts import QUERY_ANALYZER, QUERY_CLASSIFIER, SYNTHESIZER, GENERATOR, R
 
 logger = logging.getLogger(__name__)
 
+_QUERY_ROUTE_KEYWORDS = (
+    ("experimental_result", ("experiment", "result", "metric", "benchmark", "ablation", "performance", "实验", "结果", "指标", "消融", "性能", "数据集")),
+    ("conclusion", ("limitation", "future work", "discussion", "conclusion", "weakness", "局限", "限制", "未来", "结论", "不足")),
+    ("method", ("method", "architecture", "algorithm", "pipeline", "model", "how does", "方法", "架构", "算法", "流程", "模型", "如何工作")),
+    ("background", ("contribution", "motivation", "background", "overview", "abstract", "贡献", "动机", "背景", "概述", "摘要")),
+)
+
+
+def _infer_query_type(query: str, fallback: str = "general") -> str:
+    lowered = query.lower()
+    for query_type, keywords in _QUERY_ROUTE_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return query_type
+    return fallback
+
+
+def _query_aspect_count(query: str) -> int:
+    lowered = query.lower()
+    return sum(any(keyword in lowered for keyword in keywords) for _, keywords in _QUERY_ROUTE_KEYWORDS)
+
 class QueryAnalysis(BaseModel):
     sub_queries: list[str] = Field(description="List of sub-queries, original query first")
 
 
 class QueryClassification(BaseModel):
-    query_type: str = Field(description="One of: experimental_result, method, background, general")
+    query_type: str = Field(description="One of: experimental_result, method, background, conclusion, general")
 
 
 class ReflectionResult(BaseModel):
@@ -64,6 +84,11 @@ async def analyze_query(state: AgentState, llm: BaseChatModel) -> dict:
     query = state["query"]
     context_header = _build_context_header(state)
 
+    # Most paper questions have one intent. Avoid an extra local-LLM call and
+    # duplicate retrieval for these; multi-aspect questions still decompose.
+    if _query_aspect_count(query) <= 1:
+        return {"sub_queries": [query]}
+
     system_content = QUERY_ANALYZER
     if context_header:
         system_content += f"\n\n# Conversation Context\n{context_header}"
@@ -87,6 +112,12 @@ async def classify_query(state: AgentState, llm: BaseChatModel) -> dict:
     from .tools import set_query_type
     query = state["query"]
 
+    inferred = _infer_query_type(query)
+    if inferred != "general":
+        set_query_type(inferred)
+        logger.info("Query classified deterministically as: %s", inferred)
+        return {"query_type": inferred}
+
     structured_llm = llm.with_structured_output(QueryClassification)
     try:
         result: QueryClassification = await structured_llm.ainvoke([
@@ -94,7 +125,7 @@ async def classify_query(state: AgentState, llm: BaseChatModel) -> dict:
             HumanMessage(content=query),
         ])
         query_type = result.query_type
-        if query_type not in ("experimental_result", "method", "background", "general"):
+        if query_type not in ("experimental_result", "method", "background", "conclusion", "general"):
             query_type = "general"
     except Exception:
         query_type = "general"
@@ -120,6 +151,13 @@ def prepare_synthesis(state: AgentState) -> dict:
 
     sub_context = "\n\n".join(context_parts)
 
+    if len(sub_answers) == 1:
+        return {
+            "synth_messages": [],
+            "direct_answer": sub_answers[0]["answer"],
+            "citations": all_citations,
+        }
+
     system_content = SYNTHESIZER.format(context=sub_context)
     if context_header:
         system_content += f"\n\n# Conversation Context\n{context_header}"
@@ -130,6 +168,7 @@ def prepare_synthesis(state: AgentState) -> dict:
             HumanMessage(content=f"Original question: {state['query']}"),
         ],
         "citations": all_citations,
+        "direct_answer": "",
     }
 
 
@@ -189,8 +228,11 @@ async def retrieve(state: SubAgentState, retriever, citation_extractor) -> dict:
         "experimental_result": ["experiment"],
         "method": ["method"],
         "background": ["background"],
+        "conclusion": ["conclusion"],
         "general": None,
     }
+    lowered = query.lower()
+    query_type = _infer_query_type(lowered, query_type)
     section_type_filter = _ROUTE_CONFIG.get(query_type)
 
     docs: list[Document] = retriever.invoke(
@@ -202,6 +244,17 @@ async def retrieve(state: SubAgentState, retriever, citation_extractor) -> dict:
     if not docs and section_type_filter:
         logger.info(f"No results with section filter, retrying without filter")
         docs = retriever.invoke(query, section_type_filter=None, paper_ids=paper_ids)
+
+    if any(keyword in lowered for keyword in ("contribution", "贡献")):
+        contribution_docs = [
+            doc for doc in docs
+            if any(
+                section in str(doc.metadata.get("section_path", "")).lower()
+                for section in ("abstract", "introduction", "摘要", "引言")
+            )
+        ]
+        if contribution_docs:
+            docs = contribution_docs
 
     citations = citation_extractor.extract_all(docs) if docs else []
     documents = []
@@ -275,6 +328,11 @@ async def reflect(state: SubAgentState, llm: BaseChatModel, vision_service=None)
     retries = state.get("retries", 0)
 
     if not documents:
+        return {"is_sufficient": True, "retry_queries": [], "retries": retries + 1}
+
+    # The reflector prompt itself treats a relevant cited answer as sufficient.
+    # Apply that rule deterministically to avoid another full local-model pass.
+    if citations and re.search(r"\[\d+\]", answer):
         return {"is_sufficient": True, "retry_queries": [], "retries": retries + 1}
 
     structured_llm = llm.with_structured_output(ReflectionResult)

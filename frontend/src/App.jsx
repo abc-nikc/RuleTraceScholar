@@ -10,49 +10,77 @@ import DiscoveryPanel from './components/DiscoveryPanel';
 import KnowledgePanel from './components/KnowledgePanel';
 import { fetchSessions, fetchHistory, deleteSession, streamChat } from './api';
 
+const ACTIVE_SESSION_KEY = 'ruletrace-scholar.active-session';
+const THINKING_MODE_KEY = 'ruletrace-scholar.deep-thinking';
+
+function normalizeHistory(messages = []) {
+  return messages.map((message) => ({
+    ...message,
+    citations: message.citations || [],
+    explanation: message.explanation || null,
+    claim_tests: message.claim_tests || null,
+    repair: message.repair || null,
+    capsule: message.capsule || null,
+    finalized: true,
+  }));
+}
+
 export default function App() {
   const [sessions, setSessions] = useState([]);
   const [currentId, setCurrentId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [paperScope, setPaperScope] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [agentStatus, setAgentStatus] = useState('');
+  const [deepThinking, setDeepThinking] = useState(
+    () => window.localStorage.getItem(THINKING_MODE_KEY) === 'true'
+  );
   const [panel, setPanel] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const cancelRef = useRef(null);
   const bottomRef = useRef(null);
+  const restoredRef = useRef(false);
 
-  const loadSessions = useCallback(() => {
-    fetchSessions().then(setSessions).catch(() => {});
+  const selectSession = useCallback(async (id) => {
+    setCurrentId(id);
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, id);
+    setPaperScope([]);
+    setPanel(null);
+    try {
+      const data = await fetchHistory(id);
+      setMessages(normalizeHistory(data.messages));
+    } catch (error) {
+      setMessages([{ role: 'assistant', content: `无法恢复该会话：${error.message}`, citations: [], finalized: true }]);
+    }
   }, []);
 
-  useEffect(() => { loadSessions(); }, [loadSessions]);
+  const loadSessions = useCallback(async ({ restore = false } = {}) => {
+    try {
+      const items = await fetchSessions();
+      setSessions(items);
+      if (restore && !restoredRef.current) {
+        restoredRef.current = true;
+        const savedId = window.localStorage.getItem(ACTIVE_SESSION_KEY);
+        const target = items.find((item) => item.session_id === savedId) || items[0];
+        if (target) await selectSession(target.session_id);
+      }
+    } catch (error) {
+      if (restore) {
+        setMessages([{ role: 'assistant', content: `无法加载历史会话：${error.message}`, citations: [], finalized: true }]);
+      }
+    }
+  }, [selectSession]);
+
+  useEffect(() => { loadSessions({ restore: true }); }, [loadSessions]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  const selectSession = async (id) => {
-    setCurrentId(id);
-    setPaperScope([]);
-    setPanel(null);
-    try {
-      const data = await fetchHistory(id);
-      setMessages((data.messages || []).map((m) => ({
-        ...m,
-        citations: m.citations || [],
-        explanation: m.explanation || null,
-        claim_tests: m.claim_tests || null,
-        repair: m.repair || null,
-        capsule: m.capsule || null,
-        finalized: true,
-      })));
-    } catch {
-      setMessages([]);
-    }
-  };
-
   const newChat = () => {
+    if (cancelRef.current) cancelRef.current();
     setCurrentId(null);
+    window.localStorage.removeItem(ACTIVE_SESSION_KEY);
     setMessages([]);
     setPaperScope([]);
     setPanel(null);
@@ -69,6 +97,7 @@ export default function App() {
 
     setMessages((prev) => [...prev, { role: 'user', content: query }]);
     setLoading(true);
+    setAgentStatus('analyzing');
 
     let sessionId = options.newSession ? null : currentId;
     let answer = '';
@@ -84,6 +113,7 @@ export default function App() {
         case 'session_id':
           sessionId = evt.data;
           setCurrentId(evt.data);
+          window.localStorage.setItem(ACTIVE_SESSION_KEY, evt.data);
           break;
         case 'answer':
           answer = evt.data;
@@ -97,6 +127,9 @@ export default function App() {
           break;
         case 'sub_queries':
           subQueries = evt.data || [];
+          break;
+        case 'status':
+          setAgentStatus(evt.data || '');
           break;
         case 'citations':
           citations = evt.data;
@@ -146,17 +179,23 @@ export default function App() {
           break;
         case 'done':
           setLoading(false);
+          setAgentStatus('');
           loadSessions();
           break;
         case 'error':
-          setMessages((prev) => [
-            ...prev,
-            { role: 'assistant', content: `Error: ${evt.data}`, citations: [] },
-          ]);
+          setMessages((prev) => {
+            const errorMessage = { role: 'assistant', content: `请求失败：${evt.data}`, citations: [], finalized: true };
+            const last = prev[prev.length - 1];
+            if (last?.role === 'assistant' && !last.finalized) {
+              return prev.slice(0, -1).concat({ ...last, content: `${last.content}\n\n> ${errorMessage.content}`, finalized: true });
+            }
+            return [...prev, errorMessage];
+          });
           setLoading(false);
+          setAgentStatus('');
           break;
       }
-    }, requestPaperIds);
+    }, requestPaperIds, deepThinking);
 
     cancelRef.current = cancel;
   };
@@ -255,6 +294,7 @@ export default function App() {
             <ChatMessages
               messages={messages}
               loading={loading}
+              status={agentStatus}
               onOpenUpload={() => setPanel('upload')}
               onOpenGuide={() => setPanel('guide')}
               onOpenDiscovery={() => setPanel('discovery')}
@@ -264,6 +304,11 @@ export default function App() {
               onSend={handleSend}
               disabled={loading}
               scopeLabel={paperScope[0] || ''}
+              deepThinking={deepThinking}
+              onDeepThinkingChange={(enabled) => {
+                setDeepThinking(enabled);
+                window.localStorage.setItem(THINKING_MODE_KEY, String(enabled));
+              }}
             />
           </div>
 

@@ -66,6 +66,10 @@ instead of receiving only a fluent final answer.
 - **Structured PDF parsing** (Docling): section hierarchy, tables, figures, formulas, captions; smart OCR fallback
 - **VLM integration**: lazy figure analysis for visual queries or insufficient text answers
 - **Multi-turn memory**: sliding window + LLM summary compression, persisted via Postgres checkpointer
+- **Persistent browser conversations**: the last active conversation is restored after a page refresh; completed turns remain in PostgreSQL/LangGraph checkpoints
+- **Selectable reasoning mode**: switch per question between `快速回答` (non-thinking, bounded output and deterministic evidence checks) and `深度思考` (full model reasoning, evidence repair, and semantic audit)
+
+> Current ingestion scope: the knowledge-base upload pipeline accepts PDF papers. Academic discovery can fetch and import arXiv PDFs. General webpage URLs and source-code repositories are not yet ingested into the RAG index; the interface does not claim otherwise.
 - **SSE streaming** with source-level citations (paper, section, page)
 - **Built-in evaluation**: RAGAS (Faithfulness, Relevancy, Precision, Correctness) + retrieval metrics (Recall@k, MRR, MAP)
 

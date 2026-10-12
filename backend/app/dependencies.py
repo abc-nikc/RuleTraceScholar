@@ -58,7 +58,8 @@ class RetrieverTool:
         )
 
 
-_llm: ChatOpenAI | None = None
+_llm_fast: ChatOpenAI | None = None
+_llm_deep: ChatOpenAI | None = None
 _retriever: Retriever | None = None
 _retriever_tool: RetrieverTool | None = None
 _pdf_parser: PDFParser | None = None
@@ -66,8 +67,10 @@ _rag_integration: RAGIntegration | None = None
 _checkpointer: AsyncPostgresSaver | None = None
 
 
-def get_llm() -> ChatOpenAI:
-    return _llm  # type: ignore
+def get_llm(thinking: bool | None = None) -> ChatOpenAI:
+    """Return the selectable Ollama reasoning mode for the current request."""
+    use_deep = Config.LLM_THINKING if thinking is None else thinking
+    return (_llm_deep if use_deep else _llm_fast)  # type: ignore
 
 
 def get_retriever() -> Retriever:
@@ -92,7 +95,7 @@ def get_checkpointer() -> AsyncPostgresSaver:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _llm, _retriever, _retriever_tool, _pdf_parser, _rag_integration, _checkpointer
+    global _llm_fast, _llm_deep, _retriever, _retriever_tool, _pdf_parser, _rag_integration, _checkpointer
 
     logger.info("Starting up — loading models …")
 
@@ -100,12 +103,23 @@ async def lifespan(app: FastAPI):
     selected_store = initialize_store(Config.POSTGRES_URI, Config.METADATA_BACKEND)
     logger.info("Selected metadata backend: %s", selected_store)
 
-    _llm = ChatOpenAI(
+    common_llm_options = dict(
         base_url=Config.LLM_BASE_URL,
         model=Config.LLM_MODEL,
         api_key=Config.LLM_API_KEY,
         temperature=Config.LLM_TEMPERATURE,
+    )
+    # Ollama's OpenAI-compatible chat endpoint exposes thinking through
+    # reasoning_effort: "none" requests non-thinking and "high" enables it.
+    _llm_fast = ChatOpenAI(
+        **common_llm_options,
+        max_tokens=Config.LLM_FAST_MAX_TOKENS,
+        reasoning_effort="none",
+    )
+    _llm_deep = ChatOpenAI(
+        **common_llm_options,
         max_tokens=Config.LLM_MAX_TOKENS,
+        reasoning_effort="high",
     )
 
     _retriever = Retriever(
@@ -117,7 +131,7 @@ async def lifespan(app: FastAPI):
     )
     _retriever_tool = RetrieverTool(_retriever)
 
-    _pdf_parser = PDFParser(llm=_llm)
+    _pdf_parser = PDFParser(llm=_llm_fast)
     _rag_integration = RAGIntegration(
         embedding_model=Config.EMBEDDING_MODEL,
         milvus_uri=Config.MILVUS_URI,
