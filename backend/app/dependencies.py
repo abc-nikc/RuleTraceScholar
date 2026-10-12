@@ -14,7 +14,7 @@ from rag.retrieval import Retriever
 from rag.citation import CitationExtractor
 from rag.integration import PDFParser, RAGIntegration
 from app.store import close_store, initialize_store
-from app.runtime_settings import get_llm_api_key, get_runtime_settings
+from app.runtime_settings import get_llm_api_key, get_runtime_settings, selected_llm_model
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +41,21 @@ class RetrieverTool:
     def __init__(self, retriever: Retriever):
         self._retriever = retriever
 
-    def invoke(self, query: str, section_type_filter=None, paper_ids=None):
+    def invoke(
+        self,
+        query: str,
+        section_type_filter=None,
+        paper_ids=None,
+        rerank: bool | None = None,
+        expand_parent: bool | None = None,
+    ):
         settings = get_runtime_settings().retrieval
         return self._retriever.retrieve(
             query=query,
             k=settings.top_k,
             use_hyde=False,
-            rerank=settings.rerank,
-            expand_parent=settings.expand_parent,
+            rerank=settings.rerank if rerank is None else rerank,
+            expand_parent=settings.expand_parent if expand_parent is None else expand_parent,
             rrf_k=settings.rrf_k,
             fetch_k=settings.fetch_k,
             section_type_filter=section_type_filter,
@@ -71,11 +78,12 @@ def get_llm(thinking: bool | None = None) -> ChatOpenAI:
     settings = get_runtime_settings()
     llm_settings = settings.llm
     use_deep = Config.LLM_THINKING if thinking is None else thinking
+    selected_model = selected_llm_model(settings, use_deep)
     api_key = get_llm_api_key(settings)
     cache_key = (
         llm_settings.provider,
         llm_settings.base_url,
-        llm_settings.model,
+        selected_model,
         api_key,
         llm_settings.temperature,
         llm_settings.fast_max_tokens,
@@ -86,12 +94,18 @@ def get_llm(thinking: bool | None = None) -> ChatOpenAI:
     if cache_key not in _llm_clients:
         options = dict(
             base_url=llm_settings.base_url,
-            model=llm_settings.model,
+            model=selected_model,
             api_key=api_key or "not-configured",
             temperature=llm_settings.temperature,
             max_tokens=(
                 llm_settings.deep_max_tokens if use_deep else llm_settings.fast_max_tokens
             ),
+            timeout=(
+                Config.LLM_DEEP_TIMEOUT_SECONDS
+                if use_deep
+                else Config.LLM_FAST_TIMEOUT_SECONDS
+            ),
+            max_retries=0,
         )
         if llm_settings.reasoning_supported:
             options["reasoning_effort"] = "high" if use_deep else "none"

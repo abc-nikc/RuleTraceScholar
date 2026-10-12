@@ -39,7 +39,7 @@ def test_is_visual_query():
         print(f"  {status} [{str(expected):5s}=={str(result):5s}] {query}")
 
     print(f"\n  {'PASS' if all_pass else 'FAIL'}\n")
-    return all_pass
+    assert all_pass
 
 
 # --------------- Test 2: should_invoke_vlm ---------------
@@ -68,12 +68,12 @@ def test_should_invoke_vlm():
         print(f"  {status} [{str(expected):5s}=={str(result):5s}] has_fig={has_fig} | {query[:45]}")
 
     print(f"\n  {'PASS' if all_pass else 'FAIL'}\n")
-    return all_pass
+    assert all_pass
 
 
 # --------------- Test 3: Figure image extraction ---------------
 
-def test_figure_extraction(pdf_path: str):
+def run_figure_extraction(pdf_path: str):
     print("=" * 60)
     print("Test 3: Figure Image Extraction")
     print("=" * 60)
@@ -111,7 +111,7 @@ def test_figure_extraction(pdf_path: str):
 
 # --------------- Test 4: VLM analysis ---------------
 
-def test_vlm_analysis(nodes):
+def run_vlm_analysis(nodes):
     print("=" * 60)
     print("Test 4: VLM Analysis")
     print("=" * 60)
@@ -160,12 +160,12 @@ def test_vlm_analysis(nodes):
 if __name__ == "__main__":
     pdf = sys.argv[1] if len(sys.argv) > 1 else PDF_PATH
 
-    r1 = test_is_visual_query()
-    r2 = test_should_invoke_vlm()
-    nodes = test_figure_extraction(pdf)
-    test_vlm_analysis(nodes)
+    test_is_visual_query()
+    test_should_invoke_vlm()
+    nodes = run_figure_extraction(pdf)
+    run_vlm_analysis(nodes)
 
     log_dir = Path(__file__).parent.parent / "log"
     log_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    print(f"Done. Tests 1&2 logic: {'PASS' if r1 and r2 else 'FAIL'}")
+    print("Done. Tests 1&2 logic: PASS")

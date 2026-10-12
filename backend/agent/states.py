@@ -60,3 +60,5 @@ class SubAgentState(TypedDict):
     retry_queries: Annotated[list[str], operator.add]
     retries: int
     needs_vlm: bool
+    context_char_limit: int
+    fast_mode: bool

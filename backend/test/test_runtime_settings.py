@@ -59,6 +59,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                 self.assertEqual(loaded.chunking.chunk_size, 720)
                 self.assertEqual(loaded.memory.window_size, 10)
                 self.assertEqual(loaded.llm.model, settings.llm.model)
+                self.assertEqual(loaded.llm.fast_model, settings.llm.fast_model)
 
                 payload = loaded.model_dump()
                 payload["llm"]["provider"] = "openai_compatible"

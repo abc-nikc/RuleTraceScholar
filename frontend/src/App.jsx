@@ -8,7 +8,7 @@ import SettingsPanel from './components/SettingsPanel';
 import GuidePanel from './components/GuidePanel';
 import DiscoveryPanel from './components/DiscoveryPanel';
 import KnowledgePanel from './components/KnowledgePanel';
-import { fetchSessions, fetchHistory, deleteSession, fetchFiles, fetchRuntimeSettings, streamChat, updateSessionPaperScope } from './api';
+import { fetchSessions, fetchHistory, deleteSession, fetchFiles, fetchLocalModels, fetchRuntimeSettings, streamChat, updateSessionPaperScope } from './api';
 
 const ACTIVE_SESSION_KEY = 'ruletrace-scholar.active-session';
 const THINKING_MODE_KEY = 'ruletrace-scholar.deep-thinking';
@@ -90,11 +90,35 @@ export default function App() {
 
   useEffect(() => { refreshPapers(); }, [refreshPapers]);
 
-  useEffect(() => {
-    fetchRuntimeSettings()
-      .then((data) => setModelProfile(data.model_status || null))
-      .catch(() => setModelProfile(null));
+  const refreshModelProfile = useCallback(async () => {
+    try {
+      const data = await fetchRuntimeSettings();
+        const profile = data.model_status || null;
+        if (profile?.provider !== 'ollama') {
+          setModelProfile(profile);
+          return profile;
+        }
+        try {
+          const local = await fetchLocalModels();
+          const deep = (local.models || []).find((item) => item.name === profile.model);
+          const fast = (local.models || []).find((item) => item.name === (profile.fast_model || profile.model));
+          setModelProfile({
+            ...profile,
+            processor: deep?.processor || 'not_loaded',
+            deep_processor: deep?.processor || 'not_loaded',
+            fast_processor: fast?.processor || 'not_loaded',
+          });
+        } catch {
+          setModelProfile(profile);
+        }
+      return profile;
+    } catch {
+      setModelProfile(null);
+      return null;
+    }
   }, []);
+
+  useEffect(() => { refreshModelProfile(); }, [refreshModelProfile]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -225,11 +249,13 @@ export default function App() {
           );
           break;
         case 'done':
+          cancelRef.current = null;
           setLoading(false);
           setAgentStatus('');
           loadSessions();
           break;
         case 'error':
+          cancelRef.current = null;
           setMessages((prev) => {
             const errorMessage = { role: 'assistant', content: `请求失败：${evt.data}`, citations: [], finalized: true };
             const last = prev[prev.length - 1];
@@ -245,6 +271,19 @@ export default function App() {
     }, requestPaperIds, deepThinking);
 
     cancelRef.current = cancel;
+  };
+
+  const handleCancel = () => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    setLoading(false);
+    setAgentStatus('');
+    setMessages((prev) => [...prev, {
+      role: 'assistant',
+      content: '已停止当前回答。已完成的历史对话和论文索引不受影响。',
+      citations: [],
+      finalized: true,
+    }]);
   };
 
   const analysisPrompts = {
@@ -349,6 +388,7 @@ export default function App() {
             <div ref={bottomRef} />
             <ChatInput
               onSend={handleSend}
+              onCancel={handleCancel}
               disabled={loading}
               papers={papers}
               paperScope={paperScope}
@@ -389,7 +429,7 @@ export default function App() {
                 />
               )}
               {panel === 'knowledge' && <KnowledgePanel />}
-              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={handleCollectionCleared} onLibraryUpdated={handleLibraryUpdated} onMemoryReset={() => setMessages([])} onSettingsSaved={(data) => setModelProfile(data.model_status || null)} />}
+              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={handleCollectionCleared} onLibraryUpdated={handleLibraryUpdated} onMemoryReset={() => setMessages([])} onSettingsSaved={refreshModelProfile} />}
               </div>
             </div>
           )}

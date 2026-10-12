@@ -32,6 +32,7 @@ class Config:
     
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
     LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:32b")
+    LLM_FAST_MODEL = os.getenv("LLM_FAST_MODEL", "")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
     LLM_PROVIDER = os.getenv(
         "LLM_PROVIDER",
@@ -41,6 +42,11 @@ class Config:
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
     LLM_FAST_MAX_TOKENS = int(os.getenv("LLM_FAST_MAX_TOKENS", "1024"))
+    FAST_CONTEXT_CHAR_LIMIT = int(os.getenv("FAST_CONTEXT_CHAR_LIMIT", "3500"))
+    DEEP_CONTEXT_CHAR_LIMIT = int(os.getenv("DEEP_CONTEXT_CHAR_LIMIT", "6000"))
+    LLM_FAST_TIMEOUT_SECONDS = float(os.getenv("LLM_FAST_TIMEOUT_SECONDS", "180"))
+    LLM_DEEP_TIMEOUT_SECONDS = float(os.getenv("LLM_DEEP_TIMEOUT_SECONDS", "600"))
+    DEEP_MAX_SUBQUERIES = int(os.getenv("DEEP_MAX_SUBQUERIES", "3"))
     # Qwen3 enables long hidden reasoning by default in Ollama. Disable it for
     # interactive RAG unless a deployment explicitly opts in.
     LLM_THINKING = os.getenv("LLM_THINKING", "false").lower() == "true"

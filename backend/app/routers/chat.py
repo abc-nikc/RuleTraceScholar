@@ -1,6 +1,7 @@
 """Chat API — SSE streaming with session management."""
 
 import json
+import re
 import uuid
 import logging
 from typing import AsyncGenerator
@@ -11,7 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field
 
 from config import Config
-from app.runtime_settings import get_runtime_settings
+from app.runtime_settings import get_runtime_settings, selected_llm_model
 from app.dependencies import get_llm, get_retriever_tool, get_checkpointer
 from app.store import create_session, get_session, list_files, save_capsule, update_session
 from agent.graph import build_graph
@@ -22,6 +23,42 @@ from research_audit import build_capsule, run_claim_unit_tests, run_semantic_evi
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 explainer = EvidenceRuleEngine()
+
+
+def _friendly_chat_error(exc: Exception, thinking: bool) -> str:
+    detail = str(exc).strip()
+    lowered = f"{type(exc).__name__}: {detail}".lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        seconds = Config.LLM_DEEP_TIMEOUT_SECONDS if thinking else Config.LLM_FAST_TIMEOUT_SECONDS
+        mode = "深度思考" if thinking else "快速回答"
+        return (
+            f"{mode}未能在 {seconds:g} 秒内完成。本次请求已自动终止，网页并未卡死。"
+            "若当前 Ollama 使用纯 CPU，请在设置中为快速回答选择较小模型，"
+            "或改用支持 GPU/兼容 API 的模型。"
+        )
+    return detail or "回答生成失败，请检查模型连接后重试。"
+
+
+def _evidence_guard_warning(query: str, blocked: bool) -> str:
+    if re.search(r"[\u4e00-\u9fff]", query):
+        if blocked:
+            return (
+                "\n\n> 证据发布防护：一个或多个事实/引用检查未通过。"
+                "当前回答应视为尚未核验，请检查 TRACE 与语义审计面板。"
+            )
+        return (
+            "\n\n> 证据复核提示：部分事实仍需人工复核。"
+            "在采用结论前，请检查 TRACE 与语义审计面板。"
+        )
+    if blocked:
+        return (
+            "\n\n> Evidence release guard: one or more claim/citation checks failed. "
+            "Treat the answer as unverified and inspect the TRACE and semantic audit panels."
+        )
+    return (
+        "\n\n> Evidence review notice: some claims require manual review. "
+        "Inspect the TRACE and semantic audit panels before relying on them."
+    )
 
 
 class ChatRequest(BaseModel):
@@ -53,6 +90,8 @@ def _build_graph(thinking: bool = False):
         citation_extractor=CitationExtractor,
         max_retries=Config.MAX_RETRIES,
         checkpointer=get_checkpointer(),
+        deep_analysis=thinking,
+        max_sub_queries=Config.DEEP_MAX_SUBQUERIES if thinking else 1,
     )
 
 
@@ -63,7 +102,15 @@ async def _stream_response(
     paper_ids: list[str] | None = None,
     thinking: bool = False,
 ) -> AsyncGenerator[str, None]:
-    config = {"configurable": {"thread_id": session_id}}
+    runtime_settings = get_runtime_settings()
+    # Ollama normally exposes one local runner.  Sending multiple LangGraph
+    # branches concurrently only creates a hidden queue and makes the UI look
+    # frozen, so local work is deliberately serialized.  Hosted endpoints may
+    # use limited concurrency.
+    config = {
+        "configurable": {"thread_id": session_id},
+        "max_concurrency": 1 if runtime_settings.llm.provider == "ollama" else 3,
+    }
     graph_input = {"query": query, "paper_ids": paper_ids or []}
 
     yield json.dumps({"type": "session_id", "data": session_id})
@@ -76,6 +123,7 @@ async def _stream_response(
         direct_answer = ""
         query_type = "general"
         sub_query_count = 1
+        completed_sub_queries = 0
 
         async for chunk in graph.astream(graph_input, config=config, stream_mode="updates"):
             for node_name, node_output in chunk.items():
@@ -86,6 +134,13 @@ async def _stream_response(
                         sub_query_count = len(sq)
                         yield json.dumps({"type": "sub_queries", "data": sq})
                         yield json.dumps({"type": "status", "data": "searching"})
+
+                if node_name == "sub_agent":
+                    completed_sub_queries += 1
+                    yield json.dumps({
+                        "type": "status",
+                        "data": f"subtask:{completed_sub_queries}/{max(sub_query_count, 1)}",
+                    })
 
                 if node_name == "classify":
                     query_type = node_output.get("query_type", "general")
@@ -199,20 +254,13 @@ async def _stream_response(
             claim_tests["release_decision"] = "supported"
 
         if Config.EXPLANATION_GUARD_ENABLED and claim_tests["release_decision"] != "supported":
-            if claim_tests["release_decision"] == "blocked":
-                warning = (
-                    "\n\n> Evidence release guard: one or more claim/citation checks failed. "
-                    "Treat the answer as unverified and inspect the TRACE and semantic audit panels."
-                )
-            else:
-                warning = (
-                    "\n\n> Evidence review notice: some claims require manual review. "
-                    "Inspect the TRACE and semantic audit panels before relying on them."
-                )
+            warning = _evidence_guard_warning(
+                query,
+                blocked=claim_tests["release_decision"] == "blocked",
+            )
             answer_buf += warning
             yield json.dumps({"type": "answer", "data": answer_buf})
 
-        runtime_settings = get_runtime_settings()
         capsule = build_capsule(
             session_id=session_id,
             query=query,
@@ -225,7 +273,7 @@ async def _stream_response(
             repair=repair,
             runtime={
                 "llm_provider": runtime_settings.llm.provider,
-                "llm_model": runtime_settings.llm.model,
+                "llm_model": selected_llm_model(runtime_settings, thinking),
                 "thinking_mode": "deep" if thinking else "fast",
                 "paper_scope": paper_ids or [],
                 "embedding_model": Config.EMBEDDING_MODEL,
@@ -282,7 +330,7 @@ async def _stream_response(
 
     except Exception as e:
         logger.exception("Chat error")
-        yield json.dumps({"type": "error", "data": str(e)})
+        yield json.dumps({"type": "error", "data": _friendly_chat_error(e, thinking)})
 
 
 @router.post("/chat")

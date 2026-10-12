@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from config import Config
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -19,6 +20,15 @@ from .nodes import (
     should_retry,
     prepare_retry,
 )
+
+
+def _focused_sub_queries(original: str, proposed: list[str], limit: int) -> list[str]:
+    queries = proposed or [original]
+    if len(queries) > 1:
+        focused = [query for query in queries if query != original]
+        if focused:
+            queries = focused
+    return queries[:max(1, limit)]
 
 
 def _collect_sub_answer(state: SubAgentState) -> dict:
@@ -76,13 +86,16 @@ def build_graph(
     max_retries: int = 2,
     checkpointer: Optional[BaseCheckpointSaver] = None,
     vision_service=None,
+    deep_analysis: bool = False,
+    max_sub_queries: int = 3,
 ):
     def dispatch(state: AgentState):
+        queries = state["sub_queries"][:max(1, max_sub_queries)]
         return [Send("sub_agent", {
             "query": q,
             "query_type": state.get("query_type", "general"),
             "paper_ids": state.get("paper_ids", []),
-        }) for q in state["sub_queries"]]
+        }) for q in queries]
 
     async def sub_agent_node(state: dict) -> dict:
         sub_graph = _build_sub_agent_graph(llm, retriever, citation_extractor, max_retries, vision_service).compile()
@@ -97,6 +110,13 @@ def build_graph(
             "retry_queries": [],
             "retries": 0,
             "needs_vlm": False,
+            # Bound prompt evaluation in fast mode. Deep mode keeps full context.
+            "context_char_limit": (
+                Config.DEEP_CONTEXT_CHAR_LIMIT
+                if deep_analysis
+                else Config.FAST_CONTEXT_CHAR_LIMIT
+            ),
+            "fast_mode": not deep_analysis,
         }
         result = await sub_graph.ainvoke(sub_input)
         return _collect_sub_answer(result)
@@ -108,7 +128,15 @@ def build_graph(
         return await classify_query(state, llm=llm)
 
     async def analyze_node(state: AgentState) -> dict:
-        return await analyze_query(state, llm=llm)
+        if not deep_analysis:
+            return {"sub_queries": [state["query"]]}
+        result = await analyze_query(state, llm=llm)
+        queries = _focused_sub_queries(
+            state["query"],
+            result.get("sub_queries", [state["query"]]),
+            max_sub_queries,
+        )
+        return {"sub_queries": queries}
 
     graph = StateGraph(AgentState)
 

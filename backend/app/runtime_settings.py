@@ -59,6 +59,7 @@ class LLMSettings(BaseModel):
     provider: Literal["ollama", "openai_compatible"] = "ollama"
     base_url: str = Field(min_length=8, max_length=500)
     model: str = Field(min_length=1, max_length=200)
+    fast_model: str = Field(default="", max_length=200)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     fast_max_tokens: int = Field(default=1024, ge=64, le=32768)
     deep_max_tokens: int = Field(default=4096, ge=64, le=65536)
@@ -68,6 +69,7 @@ class LLMSettings(BaseModel):
     def validate_endpoint(self):
         self.base_url = self.base_url.strip().rstrip("/")
         self.model = self.model.strip()
+        self.fast_model = self.fast_model.strip()
         parsed = urlparse(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("base_url must be a valid HTTP(S) endpoint")
@@ -91,6 +93,7 @@ def default_llm_settings() -> LLMSettings:
         provider="ollama" if is_ollama else "openai_compatible",
         base_url=Config.LLM_BASE_URL,
         model=Config.LLM_MODEL,
+        fast_model=Config.LLM_FAST_MODEL,
         temperature=Config.LLM_TEMPERATURE,
         fast_max_tokens=Config.LLM_FAST_MAX_TOKENS,
         deep_max_tokens=Config.LLM_MAX_TOKENS,
@@ -144,6 +147,11 @@ def get_llm_api_key(settings: RuntimeSettings | None = None) -> str:
     if secret:
         return secret
     return "" if Config.LLM_API_KEY == "ollama" else Config.LLM_API_KEY
+
+
+def selected_llm_model(settings: RuntimeSettings, thinking: bool) -> str:
+    """Resolve the actual model used by a mode, preserving old saved settings."""
+    return settings.llm.model if thinking else (settings.llm.fast_model or settings.llm.model)
 
 
 def save_llm_api_key(api_key: str) -> None:

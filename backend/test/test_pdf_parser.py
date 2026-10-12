@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from rag.integration import PDFParser
 
 
-def test_parse_pdf(pdf_path: str, save_log: bool = True):
+def run_parse_pdf(pdf_path: str, save_log: bool = True):
     """Test parsing a PDF file."""
     parser = PDFParser()
     
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     pdf_path = sys.argv[1]
-    test_parse_pdf(pdf_path)
+    run_parse_pdf(pdf_path)
 
 
 

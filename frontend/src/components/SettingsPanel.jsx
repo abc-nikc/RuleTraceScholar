@@ -114,8 +114,14 @@ export default function SettingsPanel({ currentSessionId, onCollectionCleared, o
   }, '已恢复项目默认设置。');
 
   const testConnection = () => run('test-model', async () => {
-    const result = await testModelConnection(settings.llm, apiKey);
-    setNotice(`连接成功：${result.provider} / ${result.model}，测试耗时 ${result.latency_seconds} 秒。`);
+    const deepResult = await testModelConnection(settings.llm, apiKey);
+    const fastModel = settings.llm.fast_model || settings.llm.model;
+    if (fastModel !== settings.llm.model) {
+      const fastResult = await testModelConnection({ ...settings.llm, model: fastModel }, apiKey);
+      setNotice(`连接成功：快速 ${fastResult.model}；深度 ${deepResult.model}。`);
+      return;
+    }
+    setNotice(`连接成功：${deepResult.provider} / ${deepResult.model}，测试耗时 ${deepResult.latency_seconds} 秒。`);
   }, '');
 
   const handleReindex = async (file) => {
@@ -162,7 +168,7 @@ export default function SettingsPanel({ currentSessionId, onCollectionCleared, o
       <section className="space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div><h3 className="text-xs font-semibold text-gray-800">模型与提供方</h3><p className="text-[10px] text-gray-400">当前选择会用于下一次问答，无需重启容器。</p></div>
-          <span className="max-w-[12rem] truncate rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600" title={modelStatus?.model}>{modelStatus?.model || settings.llm.model}</span>
+          <span className="max-w-[14rem] truncate rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-600" title={`快速：${modelStatus?.fast_model || settings.llm.fast_model || settings.llm.model}；深度：${modelStatus?.model || settings.llm.model}`}>双模型可配置</span>
         </div>
 
         <label className="block">
@@ -188,16 +194,26 @@ export default function SettingsPanel({ currentSessionId, onCollectionCleared, o
         <TextField label="API Base URL" value={settings.llm.base_url} onChange={(value) => setGroup('llm', 'base_url', value)} placeholder="http://host.docker.internal:11434/v1" />
 
         {settings.llm.provider === 'ollama' && localModels.length > 0 && (
-          <label className="block">
-            <span className="flex items-center justify-between text-[11px] text-gray-600"><span>本机已安装模型</span><span className="text-gray-400">{localModels.length} 个</span></span>
-            <select value={localModels.some((item) => item.name === settings.llm.model) ? settings.llm.model : ''} onChange={(event) => event.target.value && setGroup('llm', 'model', event.target.value)} className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-300">
-              <option value="">选择 Ollama 模型…</option>
-              {localModels.map((item) => <option key={item.name} value={item.name}>{item.name}{item.parameter_size ? ` · ${item.parameter_size}` : ''}</option>)}
-            </select>
-          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="flex items-center justify-between text-[11px] text-gray-600"><span>快速回答模型</span><span className="text-gray-400">轻量</span></span>
+              <select value={localModels.some((item) => item.name === (settings.llm.fast_model || settings.llm.model)) ? (settings.llm.fast_model || settings.llm.model) : ''} onChange={(event) => event.target.value && setGroup('llm', 'fast_model', event.target.value)} className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-300">
+                <option value="">选择模型…</option>
+                {localModels.map((item) => <option key={item.name} value={item.name}>{item.name}{item.parameter_size ? ` · ${item.parameter_size}` : ''}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="flex items-center justify-between text-[11px] text-gray-600"><span>深度思考模型</span><span className="text-gray-400">质量</span></span>
+              <select value={localModels.some((item) => item.name === settings.llm.model) ? settings.llm.model : ''} onChange={(event) => event.target.value && setGroup('llm', 'model', event.target.value)} className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-300">
+                <option value="">选择模型…</option>
+                {localModels.map((item) => <option key={item.name} value={item.name}>{item.name}{item.parameter_size ? ` · ${item.parameter_size}` : ''}</option>)}
+              </select>
+            </label>
+          </div>
         )}
 
-        <TextField label="模型名称" value={settings.llm.model} onChange={(value) => setGroup('llm', 'model', value)} placeholder={settings.llm.provider === 'ollama' ? 'qwen3:8b' : '模型部署名称'} hint="可手动填写" />
+        <TextField label="快速回答模型名称" value={settings.llm.fast_model || ''} onChange={(value) => setGroup('llm', 'fast_model', value)} placeholder="留空则与深度模型相同" hint="轻量模型优先" />
+        <TextField label="深度思考模型名称" value={settings.llm.model} onChange={(value) => setGroup('llm', 'model', value)} placeholder={settings.llm.provider === 'ollama' ? 'qwen3:8b' : '模型部署名称'} hint="主模型" />
 
         {settings.llm.provider === 'openai_compatible' && (
           <div className="space-y-2 rounded-lg border border-sky-100 bg-sky-50/50 p-2.5">
@@ -216,9 +232,9 @@ export default function SettingsPanel({ currentSessionId, onCollectionCleared, o
 
         {settings.llm.provider === 'ollama' && (
           <div className="space-y-1.5 rounded-lg border border-gray-100 p-2.5">
-            {localModels.map((item) => item.name === settings.llm.model && (
+            {localModels.map((item) => [settings.llm.model, settings.llm.fast_model || settings.llm.model].includes(item.name) && (
               <div key={item.name} className="flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-                <Cpu size={12} /><span>{PROCESSOR_LABELS[item.processor] || item.processor}</span>
+                <Cpu size={12} /><span>{item.name} · {PROCESSOR_LABELS[item.processor] || item.processor}</span>
                 {item.quantization && <span>· {item.quantization}</span>}
                 {item.context_length && <span>· 上下文 {item.context_length}</span>}
               </div>

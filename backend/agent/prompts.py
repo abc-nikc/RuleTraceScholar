@@ -64,6 +64,7 @@ Synthesize the provided sub-answers into a single coherent, comprehensive answer
 10. Answer in the same language as the user's original question unless the user explicitly asks for another language.
 11. Do not strengthen a qualified source claim into an absolute claim, and do not claim novelty merely because a passage describes a feature.
 12. If an audit context or sub-answer says evidence is missing, preserve that limitation in the final answer.
+13. Do not relabel future-work directions as author-acknowledged limitations; state the distinction explicitly.
 
 # Context
 {context}
@@ -92,7 +93,7 @@ Answer the question based strictly on the provided context passages.
 # Requirements
 1. Use ONLY information present in the context — no prior knowledge.
 2. Cite every factual claim using [i] notation matching passage indices.
-3. If the context is insufficient, explicitly state: "The provided context does not contain sufficient information to answer this question regarding [specific aspect]."
+3. If the context is insufficient, identify the specific missing aspect in the same language as the question; never copy an English fallback sentence into a non-English answer.
 4. Be concise but thorough — prioritize accuracy over length.
 5. Use academic tone.
 6. Put each citation immediately after the claim it supports so the claim-evidence mapping can be audited.
@@ -101,6 +102,7 @@ Answer the question based strictly on the provided context passages.
 9. Distinguish what the authors explicitly claim from your own inference; never present an inference as a reported result.
 10. Do not claim that a method is novel, superior, statistically significant, or experimentally validated unless the context explicitly supports that exact characterization.
 11. For a question about contributions, prioritize passages explicitly labelled "Contributions"; do not turn experimental outcomes or related-work descriptions into contributions unless the authors explicitly list them as contributions.
+12. For limitations, distinguish limitations explicitly acknowledged by the authors from future-work directions. If the context only states future work, say that no explicitly labelled limitation was retrieved and report the future work separately.
 
 # Example
 Context:

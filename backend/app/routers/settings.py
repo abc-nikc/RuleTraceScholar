@@ -62,6 +62,7 @@ def _settings_response(settings: RuntimeSettings) -> dict:
         "model_status": {
             "provider": settings.llm.provider,
             "model": settings.llm.model,
+            "fast_model": settings.llm.fast_model or settings.llm.model,
             "base_url": settings.llm.base_url,
             "api_key_configured": llm_api_key_configured(settings),
         },

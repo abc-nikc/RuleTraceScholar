@@ -14,6 +14,11 @@ import urllib.error
 import urllib.request
 
 
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8")
+
+
 def read_json(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=15) as response:
         return json.load(response)
@@ -91,8 +96,11 @@ def main() -> int:
     try:
         settings = read_json(f"{base_url}/api/settings")
         model = settings.get("model_status", {})
+        selected_model = (
+            model.get("model") if args.deep else model.get("fast_model", model.get("model"))
+        )
         print(
-            f"Model: {model.get('provider', 'unknown')} / {model.get('model', 'unknown')}"
+            f"Model: {model.get('provider', 'unknown')} / {selected_model or 'unknown'}"
             f" | Mode: {'deep' if args.deep else 'fast'}",
             file=sys.stderr,
         )

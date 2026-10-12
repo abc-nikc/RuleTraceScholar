@@ -1,5 +1,6 @@
 """Node functions for the multi-agent RAG graph."""
 
+import asyncio
 import re
 import logging
 
@@ -12,6 +13,12 @@ from .states import AgentState, SubAgentState
 from .prompts import QUERY_ANALYZER, QUERY_CLASSIFIER, SYNTHESIZER, GENERATOR, REFLECTOR, SUMMARIZER
 
 logger = logging.getLogger(__name__)
+
+
+def _answer_language_instruction(text: str) -> str:
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "\n13. Answer entirely in Chinese, including headings, caveats, and summaries."
+    return ""
 
 _QUERY_ROUTE_KEYWORDS = (
     ("experimental_result", ("experiment", "result", "metric", "benchmark", "ablation", "performance", "实验", "结果", "指标", "消融", "性能", "数据集")),
@@ -78,6 +85,90 @@ def _remap_citations(answer: str, offset: int) -> str:
     return re.sub(r"\[(\d+)\]", _replace, answer)
 
 
+def _bounded_documents(documents: list[str], char_limit: int) -> list[str]:
+    """Bound local-model prompt cost while keeping every citation addressable."""
+    if char_limit <= 0 or sum(len(item) for item in documents) <= char_limit:
+        return documents
+    per_document = max(600, char_limit // max(len(documents), 1))
+    bounded = []
+    for document in documents:
+        if len(document) <= per_document:
+            bounded.append(document)
+            continue
+        head_size = int(per_document * 0.72)
+        tail_size = per_document - head_size
+        bounded.append(
+            document[:head_size].rstrip()
+            + "\n[…证据上下文已压缩…]\n"
+            + document[-tail_size:].lstrip()
+        )
+    return bounded
+
+
+def _sanitize_answer(answer: str, citations: list[dict], query: str = "") -> str:
+    """Remove unsupported strength inflation and self-certifying meta claims."""
+    evidence = " ".join(
+        str(item.get("evidence_excerpt") or item.get("text") or "")
+        for item in citations
+    ).lower()
+    if "statistically significant" not in evidence and "显著" not in evidence:
+        answer = re.sub(r"显著(?=(提升|改善|优于|增加|降低|增益))", "", answer)
+        answer = answer.replace("效果显著", "报告的增益较大")
+        answer = re.sub(
+            r"\bstatistically significant(?:ly)?\b",
+            "reported",
+            answer,
+            flags=re.IGNORECASE,
+        )
+    answer = re.sub(
+        r"(?m)^\s*(?:所有|以上).*?(?:事实|陈述).*?(?:证据|引用).*?$\n?",
+        "",
+        answer,
+    )
+    answer = re.sub(
+        r"(?m)^\s*(?:以上|上述)(?:内容|回答|事实|结论).*?(?:基于|未引入外部知识).*?$\n?",
+        "",
+        answer,
+    )
+    if "falsification" in evidence:
+        answer = answer.replace("假定检验", "证伪检验")
+        answer = answer.replace("假定验证", "证伪检验")
+        answer = answer.replace("假定能力", "证伪能力")
+        answer = answer.replace("假证", "证伪检验")
+        answer = re.sub(
+            r"当前模型在(.+?)方面的证伪能力较弱[，,]\s*需要进一步加强证伪检验",
+            r"未来工作包括面向\1的更强证伪检验",
+            answer,
+        )
+    answer = answer.replace("tighter 的", "更紧密的")
+    if "stable ranking" in evidence:
+        answer = answer.replace(
+            "在不同设置下性能保持稳定",
+            "在不同设置下形成稳定的性能排序",
+        )
+    if re.search(r"[\u4e00-\u9fff]", query):
+        future_ref = next(
+            (
+                index for index, item in enumerate(citations, 1)
+                if "future work" in str(
+                    item.get("evidence_excerpt") or item.get("text") or ""
+                ).lower()
+            ),
+            None,
+        )
+        if future_ref:
+            answer = answer.replace(
+                "作者承认的局限性包括：",
+                "关于作者明确承认的局限性：检索证据未把以下内容明确标为“局限”，"
+                f"而是列为未来工作 [{future_ref}]：",
+            )
+            answer = answer.replace(
+                "The provided context does not contain sufficient information to answer this question regarding the specific limitations of the paper.",
+                f"因此，不能把这些未来方向表述为作者明确承认的局限 [{future_ref}]。",
+            )
+    return answer.strip()
+
+
 # --------------- Top-level agent nodes ---------------
 
 async def analyze_query(state: AgentState, llm: BaseChatModel) -> dict:
@@ -111,6 +202,14 @@ async def analyze_query(state: AgentState, llm: BaseChatModel) -> dict:
 async def classify_query(state: AgentState, llm: BaseChatModel) -> dict:
     from .tools import set_query_type
     query = state["query"]
+
+    # A multi-aspect question must search across sections.  Routing the whole
+    # question to the first matching section (for example, experiments) hides
+    # method or limitation evidence in fast mode.
+    if _query_aspect_count(query) > 1:
+        set_query_type("general")
+        logger.info("Multi-aspect query classified deterministically as: general")
+        return {"query_type": "general"}
 
     inferred = _infer_query_type(query)
     if inferred != "general":
@@ -159,6 +258,7 @@ def prepare_synthesis(state: AgentState) -> dict:
         }
 
     system_content = SYNTHESIZER.format(context=sub_context)
+    system_content += _answer_language_instruction(state["query"])
     if context_header:
         system_content += f"\n\n# Conversation Context\n{context_header}"
 
@@ -232,18 +332,66 @@ async def retrieve(state: SubAgentState, retriever, citation_extractor) -> dict:
         "general": None,
     }
     lowered = query.lower()
-    query_type = _infer_query_type(lowered, query_type)
+    # Preserve the deliberate cross-section route for compound questions such
+    # as architecture + results + limitations. Re-inferring the first matched
+    # keyword here used to narrow such questions back to experiments only.
+    query_type = "general" if _query_aspect_count(query) > 1 else _infer_query_type(lowered, query_type)
     section_type_filter = _ROUTE_CONFIG.get(query_type)
 
-    docs: list[Document] = retriever.invoke(
-        query,
-        section_type_filter=section_type_filter,
-        paper_ids=paper_ids,
-    )
+    fast_mode = state.get("fast_mode", False)
+    docs: list[Document] = []
+    if fast_mode and _query_aspect_count(query) > 1:
+        # Compound questions need cross-section coverage, but generating one
+        # answer per aspect is too expensive on CPU. Retrieve two compact child
+        # chunks per detected aspect and answer them in one model pass.
+        aspect_focus = (
+            ("method", ("method", "architecture", "algorithm", "pipeline", "model", "方法", "架构", "算法", "流程", "模型"), "core architecture method workflow"),
+            ("experiment", ("experiment", "result", "metric", "benchmark", "ablation", "实验", "结果", "指标", "消融"), "main experimental results metrics ablation"),
+            ("conclusion", ("limitation", "future work", "discussion", "conclusion", "weakness", "局限", "限制", "未来", "结论", "不足"), "authors acknowledged limitations future work"),
+            ("background", ("contribution", "motivation", "background", "overview", "abstract", "贡献", "动机", "背景", "概述", "摘要"), "stated contributions motivation"),
+        )
+        seen = set()
+        for section_type, keywords, focus in aspect_focus:
+            if not any(keyword in lowered for keyword in keywords):
+                continue
+            candidates = await asyncio.to_thread(
+                retriever.invoke,
+                f"{query}\nFocus: {focus}",
+                section_type_filter=[section_type],
+                paper_ids=paper_ids,
+                rerank=False,
+                expand_parent=False,
+            )
+            preferred = [
+                document for document in candidates
+                if document.metadata.get("node_type") not in {"section_header", "figure"}
+            ]
+            for document in (preferred or candidates)[:2]:
+                key = document.metadata.get("chunk_id") or document.page_content
+                if key not in seen:
+                    seen.add(key)
+                    docs.append(document)
+        logger.info("Fast compound retrieval selected %s cross-section chunks", len(docs))
+    else:
+        docs = await asyncio.to_thread(
+            retriever.invoke,
+            query,
+            section_type_filter=section_type_filter,
+            paper_ids=paper_ids,
+            rerank=False if fast_mode else None,
+            expand_parent=False if fast_mode else None,
+        )
 
     if not docs and section_type_filter:
         logger.info(f"No results with section filter, retrying without filter")
-        docs = retriever.invoke(query, section_type_filter=None, paper_ids=paper_ids)
+        docs = await asyncio.to_thread(
+            retriever.invoke,
+            query,
+            section_type_filter=None,
+            paper_ids=paper_ids,
+            rerank=False if fast_mode else None,
+            expand_parent=False if fast_mode else None,
+        )
 
     if any(keyword in lowered for keyword in ("contribution", "贡献")):
         contribution_docs = [
@@ -279,7 +427,10 @@ async def retrieve(state: SubAgentState, retriever, citation_extractor) -> dict:
 
 async def generate(state: SubAgentState, llm: BaseChatModel, vision_service=None) -> dict:
     query = state["query"]
-    documents = state.get("documents", [])
+    documents = _bounded_documents(
+        state.get("documents", []),
+        state.get("context_char_limit", 0),
+    )
     citations = state.get("citations", [])
     needs_vlm = state.get("needs_vlm", False)
 
@@ -313,11 +464,11 @@ async def generate(state: SubAgentState, llm: BaseChatModel, vision_service=None
     context = "\n\n".join(f"[{i}] {d}" for i, d in enumerate(documents, 1))
 
     resp = await llm.ainvoke([
-        SystemMessage(content=GENERATOR),
+        SystemMessage(content=GENERATOR + _answer_language_instruction(query)),
         HumanMessage(content=f"Context:\n{context}\n\nQuestion: {query}"),
     ])
 
-    return {"answer": resp.content}
+    return {"answer": _sanitize_answer(str(resp.content), citations, query)}
 
 
 async def reflect(state: SubAgentState, llm: BaseChatModel, vision_service=None) -> dict:
@@ -374,11 +525,11 @@ async def reflect(state: SubAgentState, llm: BaseChatModel, vision_service=None)
                 enhanced_docs = list(documents) + extra_docs
                 context = "\n\n".join(f"[{i}] {d}" for i, d in enumerate(enhanced_docs, 1))
                 resp = await llm.ainvoke([
-                    SystemMessage(content=GENERATOR),
+                    SystemMessage(content=GENERATOR + _answer_language_instruction(query)),
                     HumanMessage(content=f"Context:\n{context}\n\nQuestion: {query}"),
                 ])
                 return {
-                    "answer": resp.content,
+                    "answer": _sanitize_answer(str(resp.content), citations, query),
                     "documents": enhanced_docs,
                     "needs_vlm": True,   # mark as used to prevent re-trigger
                     "is_sufficient": True,

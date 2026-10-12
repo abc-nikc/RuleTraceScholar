@@ -69,6 +69,8 @@ instead of receiving only a fluent final answer.
 - **Multi-turn memory**: sliding window + LLM summary compression, persisted via Postgres checkpointer
 - **Persistent browser conversations**: the last active conversation is restored after a page refresh; completed turns remain in PostgreSQL/LangGraph checkpoints
 - **Selectable reasoning mode**: switch per question between `快速回答` (non-thinking, bounded output and deterministic evidence checks) and `深度思考` (full model reasoning, evidence repair, and semantic audit)
+- **Hardware-aware execution policy**: fast mode uses one retrieval/generation path; deep mode removes the duplicate broad branch, caps focused sub-agents, and serializes local Ollama work instead of creating a hidden single-runner queue
+- **Bounded and observable inference**: model calls have mode-specific timeouts, the UI reports elapsed time and completed evidence subtasks, and every running answer has a visible stop button
 - **Visible model management**: always show the active provider/model beside the composer; select installed Ollama models or configure an OpenAI-compatible endpoint from Settings without rebuilding containers
 - **Secret-safe API configuration**: API keys are written only to the ignored backend data volume and are never returned to the browser
 
@@ -220,7 +222,10 @@ HTTP API, but they are not presented as completed features.
 
 ### Model selection
 
-Open **Settings → 模型与提供方**. The page shows the active provider and model.
+Open **Settings → 模型与提供方**. The page shows the active provider and the
+two mode-specific models. `快速回答模型` may be a small local model for low
+latency, while `深度思考模型` may remain a larger model for multi-step analysis.
+Leaving the fast model blank makes both modes use the same model.
 
 - **本地 Ollama** reads the models actually installed on the host, lets the
   user select one or enter its tag manually, and reports whether a loaded model
@@ -233,6 +238,15 @@ Open **Settings → 模型与提供方**. The page shows the active provider and
   Saving applies the model to the next question without restarting.
 - The `端点支持深度推理参数` switch should be disabled when an API does not
   implement `reasoning_effort`.
+- The composer displays `CPU`, `GPU`, or mixed placement when Ollama reports it.
+  On CPU-only execution, use `快速回答` for normal questions; deep mode is
+  intentionally more expensive and is bounded by the configured timeout.
+- Fast mode runs one retrieval/generation path, skips the CPU-heavy cross-encoder
+  reranker, and bounds the source context;
+  deep mode can decompose up to three focused sub-questions, then synthesize and
+  audit them. Both modes retain numbered evidence and replay metadata.
+- Both modes enforce context and model-call time bounds, so an unavailable or
+  undersized local runtime produces a visible error instead of an endless wait.
 
 ---
 

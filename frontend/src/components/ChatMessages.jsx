@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { User, Bot, ChevronDown, ChevronRight, Upload, CircleHelp, Sparkles, Search } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ExplanationPanel from './ExplanationPanel';
 import AuditPanel from './AuditPanel';
 
@@ -96,7 +96,29 @@ const STATUS_LABELS = {
   auditing_evidence: '正在执行语义证据审计…',
 };
 
+function statusLabel(status) {
+  if (status?.startsWith('subtask:')) {
+    const progress = status.slice('subtask:'.length);
+    return `已完成 ${progress} 个证据子任务，正在继续处理…`;
+  }
+  return STATUS_LABELS[status] || '正在处理…';
+}
+
 export default function ChatMessages({ messages, loading, status, onOpenUpload, onOpenGuide, onOpenDiscovery }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!loading) {
+      setElapsedSeconds(0);
+      return undefined;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
@@ -167,7 +189,8 @@ export default function ChatMessages({ messages, loading, status, onOpenUpload, 
                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]" />
                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]" />
               </div>
-              <p className="mt-2 text-[11px] text-gray-400">{STATUS_LABELS[status] || '正在处理…'}</p>
+              <p className="mt-2 text-[11px] text-gray-400">{statusLabel(status)}</p>
+              <p className="mt-1 text-[10px] text-gray-300">已用时 {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} · 可点击输入框右侧停止</p>
             </div>
           </div>
         )}

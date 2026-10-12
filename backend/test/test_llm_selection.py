@@ -15,6 +15,7 @@ class LLMSelectionTests(unittest.TestCase):
             "provider": "openai_compatible",
             "base_url": "https://example.test/v1",
             "model": "research-model",
+            "fast_model": "fast-research-model",
             "temperature": 0.3,
             "fast_max_tokens": 512,
             "deep_max_tokens": 2048,
@@ -31,11 +32,16 @@ class LLMSelectionTests(unittest.TestCase):
         fast = chat_openai.call_args_list[0].kwargs
         deep = chat_openai.call_args_list[1].kwargs
         self.assertEqual(fast["base_url"], "https://example.test/v1")
-        self.assertEqual(fast["model"], "research-model")
+        self.assertEqual(fast["model"], "fast-research-model")
         self.assertEqual(fast["api_key"], "secret")
         self.assertEqual(fast["max_tokens"], 512)
+        self.assertEqual(fast["timeout"], 180)
+        self.assertEqual(fast["max_retries"], 0)
         self.assertEqual(fast["reasoning_effort"], "none")
         self.assertEqual(deep["max_tokens"], 2048)
+        self.assertEqual(deep["model"], "research-model")
+        self.assertEqual(deep["timeout"], 600)
+        self.assertEqual(deep["max_retries"], 0)
         self.assertEqual(deep["reasoning_effort"], "high")
 
     def test_reasoning_parameter_is_omitted_for_unsupported_endpoint(self):

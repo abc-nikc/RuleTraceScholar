@@ -1,9 +1,11 @@
 import { useState, useRef } from 'react';
-import { Send, BookOpenCheck, Brain, Bot, Zap } from 'lucide-react';
+import { Send, BookOpenCheck, Brain, Bot, Square, Zap } from 'lucide-react';
 
-export default function ChatInput({ onSend, disabled, papers, paperScope, onPaperScopeChange, deepThinking, onDeepThinkingChange, modelProfile }) {
+export default function ChatInput({ onSend, onCancel, disabled, papers, paperScope, onPaperScopeChange, deepThinking, onDeepThinkingChange, modelProfile }) {
   const [text, setText] = useState('');
   const textareaRef = useRef(null);
+  const activeModel = deepThinking ? modelProfile?.model : (modelProfile?.fast_model || modelProfile?.model);
+  const activeProcessor = deepThinking ? modelProfile?.deep_processor : modelProfile?.fast_processor;
 
   const handleSubmit = () => {
     const trimmed = text.trim();
@@ -44,14 +46,16 @@ export default function ChatInput({ onSend, disabled, papers, paperScope, onPape
           {deepThinking ? '深度思考' : '快速回答'}
         </button>
         <div className="flex min-w-0 items-center gap-2">
-          {modelProfile?.model && (
+          {activeModel && (
             <span className="inline-flex max-w-[14rem] items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[10px] text-slate-600" title={`${modelProfile.provider} · ${modelProfile.base_url}`}>
               <Bot size={11} className="shrink-0" />
-              <span className="truncate">{modelProfile.provider === 'ollama' ? '本地' : 'API'} · {modelProfile.model}</span>
+              <span className="truncate">{modelProfile.provider === 'ollama' ? '本地' : 'API'} · {activeModel}</span>
             </span>
           )}
           <span className="text-[10px] text-gray-400">
-            {deepThinking ? '质量优先 · 响应较慢' : '速度优先 · 可随时切换'}
+            {activeProcessor === 'cpu'
+              ? '纯 CPU · 深度模式会较慢'
+              : deepThinking ? '质量优先 · 多步审计' : '速度优先 · 单路径回答'}
           </span>
         </div>
       </div>
@@ -85,15 +89,27 @@ export default function ChatInput({ onSend, disabled, papers, paperScope, onPape
           className="flex-1 resize-none bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400 max-h-[200px]"
           disabled={disabled}
         />
-        <button
-          onClick={handleSubmit}
-          aria-label="Send message"
-          title="Send message"
-          disabled={disabled || !text.trim()}
-          className="p-2 rounded-lg bg-black text-white hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shrink-0"
-        >
-          <Send size={16} />
-        </button>
+        {disabled ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Stop generation"
+            title="停止当前回答"
+            className="shrink-0 rounded-lg bg-red-500 p-2 text-white transition-colors hover:bg-red-600"
+          >
+            <Square size={15} fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            aria-label="Send message"
+            title="Send message"
+            disabled={!text.trim()}
+            className="p-2 rounded-lg bg-black text-white hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shrink-0"
+          >
+            <Send size={16} />
+          </button>
+        )}
       </div>
     </div>
   );
