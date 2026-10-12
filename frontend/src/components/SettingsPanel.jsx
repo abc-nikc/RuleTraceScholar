@@ -47,7 +47,7 @@ const PROCESSOR_LABELS = {
   not_loaded: '未加载',
 };
 
-export default function SettingsPanel({ currentSessionId, onCollectionCleared, onMemoryReset, onSettingsSaved }) {
+export default function SettingsPanel({ currentSessionId, onCollectionCleared, onLibraryUpdated, onMemoryReset, onSettingsSaved }) {
   const [files, setFiles] = useState([]);
   const [settings, setSettings] = useState(null);
   const [modelStatus, setModelStatus] = useState(null);
@@ -129,7 +129,11 @@ export default function SettingsPanel({ currentSessionId, onCollectionCleared, o
 
   const handleDeleteFile = async (fileId) => {
     if (!confirm('删除后论文原文件和向量索引都将移除。继续吗？')) return;
-    await run(`delete-${fileId}`, async () => { await deleteFile(fileId); setFiles(await fetchFiles()); }, '论文已删除。');
+    await run(`delete-${fileId}`, async () => {
+      await deleteFile(fileId);
+      setFiles(await fetchFiles());
+      onLibraryUpdated?.();
+    }, '论文已删除。');
   };
 
   const handleMemoryReset = async () => {

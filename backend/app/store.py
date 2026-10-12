@@ -51,6 +51,7 @@ class _SQLiteStore:
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL DEFAULT '',
+                    paper_scope TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -82,22 +83,35 @@ class _SQLiteStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
             if "content_hash" not in columns:
                 conn.execute("ALTER TABLE files ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
+            session_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "paper_scope" not in session_columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN paper_scope TEXT NOT NULL DEFAULT '[]'")
 
     def create_session(self, session_id: str, title: str = "") -> dict:
         now = time.time()
         with self._connection() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO sessions (session_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (session_id, title, now, now),
+                "INSERT OR IGNORE INTO sessions (session_id, title, paper_scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, title, "[]", now, now),
             )
-        return {"session_id": session_id, "title": title, "created_at": now, "updated_at": now}
+        return {"session_id": session_id, "title": title, "paper_scope": [], "created_at": now, "updated_at": now}
 
-    def update_session(self, session_id: str, title: Optional[str] = None) -> bool:
+    def update_session(
+        self,
+        session_id: str,
+        title: Optional[str] = None,
+        paper_scope: Optional[list[str]] = None,
+    ) -> bool:
         values: list[Any] = [time.time()]
         assignments = ["updated_at = ?"]
         if title is not None:
             assignments.append("title = ?")
             values.append(title)
+        if paper_scope is not None:
+            assignments.append("paper_scope = ?")
+            values.append(json.dumps(paper_scope, ensure_ascii=False))
         values.append(session_id)
         with self._connection() as conn:
             cursor = conn.execute(
@@ -107,14 +121,26 @@ class _SQLiteStore:
 
     def list_sessions(self) -> list[dict]:
         with self._connection() as conn:
-            return [dict(row) for row in conn.execute(
+            return [self._session_dict(row) for row in conn.execute(
                 "SELECT * FROM sessions ORDER BY updated_at DESC"
             ).fetchall()]
 
     def get_session(self, session_id: str) -> Optional[dict]:
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-            return dict(row) if row else None
+            return self._session_dict(row) if row else None
+
+    @staticmethod
+    def _session_dict(row) -> dict:
+        item = dict(row)
+        raw_scope = item.get("paper_scope", "[]")
+        if isinstance(raw_scope, str):
+            try:
+                raw_scope = json.loads(raw_scope)
+            except json.JSONDecodeError:
+                raw_scope = []
+        item["paper_scope"] = raw_scope if isinstance(raw_scope, list) else []
+        return item
 
     def delete_session(self, session_id: str) -> bool:
         with self._connection() as conn:
@@ -166,11 +192,24 @@ class _SQLiteStore:
             if not row:
                 return None
             conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
-            return dict(row)
+            record = dict(row)
+            for session in conn.execute("SELECT session_id, paper_scope FROM sessions").fetchall():
+                try:
+                    scope = json.loads(session["paper_scope"])
+                except (json.JSONDecodeError, TypeError):
+                    scope = []
+                cleaned = [item for item in scope if item != record["paper_id"]]
+                if cleaned != scope:
+                    conn.execute(
+                        "UPDATE sessions SET paper_scope = ? WHERE session_id = ?",
+                        (json.dumps(cleaned, ensure_ascii=False), session["session_id"]),
+                    )
+            return record
 
     def clear_all_files(self) -> int:
         with self._connection() as conn:
             cursor = conn.execute("DELETE FROM files")
+            conn.execute("UPDATE sessions SET paper_scope = '[]'")
             return cursor.rowcount
 
     def save_capsule(self, capsule: dict) -> dict:
@@ -229,6 +268,7 @@ class _PostgresStore:
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     title TEXT NOT NULL DEFAULT '',
+                    paper_scope JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at DOUBLE PRECISION NOT NULL,
                     updated_at DOUBLE PRECISION NOT NULL
                 );
@@ -254,6 +294,8 @@ class _PostgresStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_capsules_session_created
                     ON answer_capsules(session_id, created_at DESC);
+                ALTER TABLE sessions
+                    ADD COLUMN IF NOT EXISTS paper_scope JSONB NOT NULL DEFAULT '[]'::jsonb;
                 """
             )
 
@@ -261,23 +303,34 @@ class _PostgresStore:
         now = time.time()
         with self.pool.connection() as conn:
             conn.execute(
-                """INSERT INTO sessions (session_id, title, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING""",
-                (session_id, title, now, now),
+                """INSERT INTO sessions (session_id, title, paper_scope, created_at, updated_at)
+                   VALUES (%s, %s, %s::jsonb, %s, %s) ON CONFLICT (session_id) DO NOTHING""",
+                (session_id, title, "[]", now, now),
             )
-        return {"session_id": session_id, "title": title, "created_at": now, "updated_at": now}
+        return {"session_id": session_id, "title": title, "paper_scope": [], "created_at": now, "updated_at": now}
 
-    def update_session(self, session_id: str, title: Optional[str] = None) -> bool:
+    def update_session(
+        self,
+        session_id: str,
+        title: Optional[str] = None,
+        paper_scope: Optional[list[str]] = None,
+    ) -> bool:
+        from psycopg.types.json import Jsonb
+
+        assignments = ["updated_at=%s"]
+        values: list[Any] = [time.time()]
+        if title is not None:
+            assignments.append("title=%s")
+            values.append(title)
+        if paper_scope is not None:
+            assignments.append("paper_scope=%s")
+            values.append(Jsonb(paper_scope))
+        values.append(session_id)
         with self.pool.connection() as conn:
-            if title is None:
-                cursor = conn.execute(
-                    "UPDATE sessions SET updated_at=%s WHERE session_id=%s", (time.time(), session_id)
-                )
-            else:
-                cursor = conn.execute(
-                    "UPDATE sessions SET updated_at=%s, title=%s WHERE session_id=%s",
-                    (time.time(), title, session_id),
-                )
+            cursor = conn.execute(
+                f"UPDATE sessions SET {', '.join(assignments)} WHERE session_id=%s",
+                values,
+            )
             return cursor.rowcount > 0
 
     def list_sessions(self) -> list[dict]:
@@ -329,11 +382,21 @@ class _PostgresStore:
 
     def delete_file_record(self, file_id: str) -> Optional[dict]:
         with self.pool.connection() as conn:
-            return conn.execute("DELETE FROM files WHERE file_id=%s RETURNING *", (file_id,)).fetchone()
+            record = conn.execute(
+                "DELETE FROM files WHERE file_id=%s RETURNING *", (file_id,)
+            ).fetchone()
+            if record:
+                conn.execute(
+                    "UPDATE sessions SET paper_scope = paper_scope - %s WHERE paper_scope @> %s::jsonb",
+                    (record["paper_id"], json.dumps([record["paper_id"]], ensure_ascii=False)),
+                )
+            return record
 
     def clear_all_files(self) -> int:
         with self.pool.connection() as conn:
-            return conn.execute("DELETE FROM files").rowcount
+            count = conn.execute("DELETE FROM files").rowcount
+            conn.execute("UPDATE sessions SET paper_scope = '[]'::jsonb")
+            return count
 
     def save_capsule(self, capsule: dict) -> dict:
         from psycopg.types.json import Jsonb
@@ -413,8 +476,12 @@ def create_session(session_id: str, title: str = "") -> dict:
     return _get_store().create_session(session_id, title)
 
 
-def update_session(session_id: str, title: Optional[str] = None) -> bool:
-    return _get_store().update_session(session_id, title)
+def update_session(
+    session_id: str,
+    title: Optional[str] = None,
+    paper_scope: Optional[list[str]] = None,
+) -> bool:
+    return _get_store().update_session(session_id, title, paper_scope)
 
 
 def list_sessions() -> list[dict]:

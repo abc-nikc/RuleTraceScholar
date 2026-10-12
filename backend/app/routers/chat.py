@@ -5,7 +5,7 @@ import uuid
 import logging
 from typing import AsyncGenerator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel, Field
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from config import Config
 from app.runtime_settings import get_runtime_settings
 from app.dependencies import get_llm, get_retriever_tool, get_checkpointer
-from app.store import create_session, get_session, save_capsule, update_session
+from app.store import create_session, get_session, list_files, save_capsule, update_session
 from agent.graph import build_graph
 from rag.citation import CitationExtractor
 from explainability import EvidenceRuleEngine, repair_answer_with_evidence
@@ -227,6 +227,7 @@ async def _stream_response(
                 "llm_provider": runtime_settings.llm.provider,
                 "llm_model": runtime_settings.llm.model,
                 "thinking_mode": "deep" if thinking else "fast",
+                "paper_scope": paper_ids or [],
                 "embedding_model": Config.EMBEDDING_MODEL,
                 "reranker_model": Config.RERANKER_MODEL,
                 "top_k": runtime_settings.retrieval.top_k,
@@ -286,14 +287,21 @@ async def _stream_response(
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
+    paper_ids = list(dict.fromkeys(req.paper_ids))
+    known_papers = {item["paper_id"] for item in list_files()}
+    missing = [paper_id for paper_id in paper_ids if paper_id not in known_papers]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Unknown paper scope: {', '.join(missing)}")
+
     session_id = req.session_id or str(uuid.uuid4())
 
     if not get_session(session_id):
         create_session(session_id)
+    update_session(session_id, paper_scope=paper_ids)
 
     graph = _build_graph(req.thinking)
 
     return EventSourceResponse(
-        _stream_response(graph, req.query, session_id, req.paper_ids, req.thinking),
+        _stream_response(graph, req.query, session_id, paper_ids, req.thinking),
         media_type="text/event-stream",
     )

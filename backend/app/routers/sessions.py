@@ -4,12 +4,17 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
-from app.store import list_sessions, get_session, delete_session
+from app.store import delete_session, get_session, list_files, list_sessions, update_session
 from app.dependencies import get_checkpointer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+
+class PaperScopeUpdate(BaseModel):
+    paper_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 @router.get("")
@@ -39,7 +44,11 @@ async def get_history(session_id: str):
         checkpoint = None
 
     if not checkpoint or not checkpoint.get("channel_values"):
-        return {"session_id": session_id, "messages": []}
+        return {
+            "session_id": session_id,
+            "paper_ids": session.get("paper_scope", []),
+            "messages": [],
+        }
 
     messages = []
     last_sub_queries = checkpoint["channel_values"].get("sub_queries", [])
@@ -73,7 +82,23 @@ async def get_history(session_id: str):
                 item["sub_queries"] = last_sub_queries
                 break
 
-    return {"session_id": session_id, "messages": messages}
+    return {
+        "session_id": session_id,
+        "paper_ids": session.get("paper_scope", []),
+        "messages": messages,
+    }
+
+
+@router.put("/{session_id}/paper-scope")
+async def set_paper_scope(session_id: str, request: PaperScopeUpdate):
+    if not get_session(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    known_papers = {item["paper_id"] for item in list_files()}
+    missing = [paper_id for paper_id in request.paper_ids if paper_id not in known_papers]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Unknown paper scope: {', '.join(missing)}")
+    update_session(session_id, paper_scope=request.paper_ids)
+    return {"ok": True, "session_id": session_id, "paper_ids": request.paper_ids}
 
 
 @router.delete("/{session_id}")

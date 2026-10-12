@@ -1,9 +1,12 @@
 """Regression tests for one-click paper analysis scoping."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from app.routers.chat import ChatRequest
+from app.store import _SQLiteStore
 from langchain_core.documents import Document
 from pymilvus import FunctionType
 from rag.factory import HYBRID_INDEX_PARAMS
@@ -35,6 +38,26 @@ class PaperScopeTests(unittest.TestCase):
         request = ChatRequest(query="精读", paper_ids=["Paper A"])
 
         self.assertEqual(request.paper_ids, ["Paper A"])
+
+    def test_session_persists_selected_paper_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = _SQLiteStore(Path(directory) / "scope.db")
+            store.create_session("session-1")
+
+            self.assertTrue(store.update_session("session-1", paper_scope=["Paper A"]))
+            self.assertEqual(store.get_session("session-1")["paper_scope"], ["Paper A"])
+            self.assertEqual(store.list_sessions()[0]["paper_scope"], ["Paper A"])
+
+    def test_deleting_paper_removes_it_from_saved_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = _SQLiteStore(Path(directory) / "scope.db")
+            store.create_session("session-1")
+            store.add_file("file-1", "paper-a.pdf", "Paper A")
+            store.update_session("session-1", paper_scope=["Paper A", "Paper B"])
+
+            store.delete_file_record("file-1")
+
+            self.assertEqual(store.get_session("session-1")["paper_scope"], ["Paper B"])
 
     def test_hybrid_index_uses_sparse_bm25_index(self):
         dense, sparse = HYBRID_INDEX_PARAMS

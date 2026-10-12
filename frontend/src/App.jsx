@@ -8,7 +8,7 @@ import SettingsPanel from './components/SettingsPanel';
 import GuidePanel from './components/GuidePanel';
 import DiscoveryPanel from './components/DiscoveryPanel';
 import KnowledgePanel from './components/KnowledgePanel';
-import { fetchSessions, fetchHistory, deleteSession, fetchRuntimeSettings, streamChat } from './api';
+import { fetchSessions, fetchHistory, deleteSession, fetchFiles, fetchRuntimeSettings, streamChat, updateSessionPaperScope } from './api';
 
 const ACTIVE_SESSION_KEY = 'ruletrace-scholar.active-session';
 const THINKING_MODE_KEY = 'ruletrace-scholar.deep-thinking';
@@ -30,6 +30,7 @@ export default function App() {
   const [currentId, setCurrentId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [paperScope, setPaperScope] = useState([]);
+  const [papers, setPapers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [agentStatus, setAgentStatus] = useState('');
   const [deepThinking, setDeepThinking] = useState(
@@ -45,10 +46,10 @@ export default function App() {
   const selectSession = useCallback(async (id) => {
     setCurrentId(id);
     window.localStorage.setItem(ACTIVE_SESSION_KEY, id);
-    setPaperScope([]);
     setPanel(null);
     try {
       const data = await fetchHistory(id);
+      setPaperScope(data.paper_ids || []);
       setMessages(normalizeHistory(data.messages));
     } catch (error) {
       setMessages([{ role: 'assistant', content: `无法恢复该会话：${error.message}`, citations: [], finalized: true }]);
@@ -74,6 +75,21 @@ export default function App() {
 
   useEffect(() => { loadSessions({ restore: true }); }, [loadSessions]);
 
+  const refreshPapers = useCallback(async () => {
+    try {
+      const data = await fetchFiles();
+      const items = Array.isArray(data) ? data : data.files || [];
+      setPapers(items);
+      setPaperScope((current) => current.filter(
+        (paperId) => items.some((paper) => paper.paper_id === paperId)
+      ));
+    } catch {
+      setPapers([]);
+    }
+  }, []);
+
+  useEffect(() => { refreshPapers(); }, [refreshPapers]);
+
   useEffect(() => {
     fetchRuntimeSettings()
       .then((data) => setModelProfile(data.model_status || null))
@@ -91,6 +107,30 @@ export default function App() {
     setMessages([]);
     setPaperScope([]);
     setPanel(null);
+  };
+
+  const handlePaperScopeChange = (paperIds) => {
+    setPaperScope(paperIds);
+    if (currentId) {
+      updateSessionPaperScope(currentId, paperIds).catch((error) => {
+        setMessages((prev) => [...prev, {
+          role: 'assistant',
+          content: `无法保存论文范围：${error.message}`,
+          citations: [],
+          finalized: true,
+        }]);
+      });
+    }
+  };
+
+  const handleLibraryUpdated = () => {
+    loadSessions();
+    refreshPapers();
+  };
+
+  const handleCollectionCleared = () => {
+    setPaperScope([]);
+    handleLibraryUpdated();
   };
 
   const handleDelete = async (id) => {
@@ -310,7 +350,9 @@ export default function App() {
             <ChatInput
               onSend={handleSend}
               disabled={loading}
-              scopeLabel={paperScope[0] || ''}
+              papers={papers}
+              paperScope={paperScope}
+              onPaperScopeChange={handlePaperScopeChange}
               deepThinking={deepThinking}
               modelProfile={modelProfile}
               onDeepThinkingChange={(enabled) => {
@@ -333,7 +375,7 @@ export default function App() {
               </div>
               {panel === 'upload' && (
                 <FileUpload
-                  onUploaded={loadSessions}
+                  onUploaded={handleLibraryUpdated}
                   onAnalyze={handleAnalyzePaper}
                   disabled={loading}
                 />
@@ -341,13 +383,13 @@ export default function App() {
               {panel === 'guide' && <GuidePanel onAnalyze={handleAnalyzePaper} disabled={loading} />}
               {panel === 'discovery' && (
                 <DiscoveryPanel
-                  onImported={loadSessions}
+                  onImported={handleLibraryUpdated}
                   onAnalyze={handleAnalyzePaper}
                   disabled={loading}
                 />
               )}
               {panel === 'knowledge' && <KnowledgePanel />}
-              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={loadSessions} onMemoryReset={() => setMessages([])} onSettingsSaved={(data) => setModelProfile(data.model_status || null)} />}
+              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={handleCollectionCleared} onLibraryUpdated={handleLibraryUpdated} onMemoryReset={() => setMessages([])} onSettingsSaved={(data) => setModelProfile(data.model_status || null)} />}
               </div>
             </div>
           )}

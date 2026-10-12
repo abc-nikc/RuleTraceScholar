@@ -34,6 +34,7 @@ governance layer** rather than another opaque PDF chatbot.
 | **User-visible RAG and original-paper inspector** | Shows real parent/child chunks, node types, retrieval settings, evidence text, and every preserved original PDF |
 | **Source-paper research discovery** | Reconstructs the uploaded paper's bibliography locally, then finds related work from arXiv, Semantic Scholar, and Crossref with visible matching reasons |
 | **Paper-scoped guided reading** | Provides one-click overview, method, experiment, and innovation tasks without requiring prompt-engineering expertise |
+| **Explicit current-paper context** | Lets the user choose the exact paper beside the chat box; the selected `paper_id` is enforced in retrieval and restored with the conversation instead of being guessed from phrases such as “this paper” |
 
 These additions are designed for **human-in-the-loop personal scholarship**:
 the user can inspect, challenge, reconfigure, and reproduce the agent's process
@@ -45,7 +46,7 @@ instead of receiving only a fluent final answer.
 
 - **TRACE explainability layer**: claim segmentation → evidence graph → adaptive rules → reliability decision
 - **One-click guided reading**: after upload, automatically produce a scoped overview, method walkthrough, experiment audit, or innovation analysis without requiring the user to design a prompt
-- **Paper-scoped follow-up**: guided-reading conversations keep retrieval constrained to the selected paper to prevent cross-document evidence leakage
+- **Paper-scoped follow-up**: choose an exact current paper beside the composer; guided-reading conversations select it automatically, Milvus retrieval is constrained by its `paper_id`, and the choice is restored after refresh
 - **Process-faithful explanations**: rules consume the same citations and retrieval provenance used during generation
 - **Adaptive evidence thresholds**: experimental, methodological, background, and complex multi-hop queries receive different evidence requirements
 - **Uncertainty-aware evidence guard**: supported / caution / insufficient decisions with an explicitly uncalibrated uncertainty index
@@ -196,8 +197,10 @@ LangGraph workflow, PostgreSQL memory, Milvus evidence retrieval, and TRACE
 audit rather than separate demo logic.
 
 1. **Web application (recommended for most researchers)** — upload and inspect
-   papers, select the model, switch reasoning mode, and read evidence panels at
-   `http://localhost:5173`.
+   papers, select the exact current paper, select the model, switch reasoning
+   mode, and read evidence panels at `http://localhost:5173`. Choose a title in
+   **当前论文** before saying “这篇论文”; **全部论文** intentionally enables
+   cross-paper retrieval rather than asking the model to guess.
 2. **Command line** — useful from a terminal or an IDE task, with no extra
    Python packages:
 
@@ -240,6 +243,7 @@ Open **Settings → 模型与提供方**. The page shows the active provider and
 | `POST` | `/api/chat` | SSE streaming chat; optional `paper_ids` constrains retrieval to selected papers |
 | `GET` | `/api/sessions` | List sessions |
 | `GET` | `/api/sessions/:id/history` | Conversation history |
+| `PUT` | `/api/sessions/:id/paper-scope` | Validate and persist the exact current-paper scope for a conversation |
 | `DELETE` | `/api/sessions/:id` | Delete session |
 | `POST` | `/api/files/upload` | Upload PDFs |
 | `GET` | `/api/files` | List files |

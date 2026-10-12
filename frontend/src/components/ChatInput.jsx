@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Send, BookOpenCheck, Brain, Bot, Zap } from 'lucide-react';
 
-export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, onDeepThinkingChange, modelProfile }) {
+export default function ChatInput({ onSend, disabled, papers, paperScope, onPaperScopeChange, deepThinking, onDeepThinkingChange, modelProfile }) {
   const [text, setText] = useState('');
   const textareaRef = useRef(null);
 
@@ -55,12 +55,24 @@ export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, 
           </span>
         </div>
       </div>
-      {scopeLabel && (
-        <div className="mx-auto mb-2 flex max-w-3xl items-center gap-1.5 px-1 text-[11px] text-indigo-600">
-          <BookOpenCheck size={12} />
-          <span className="truncate">当前对话限定论文：{scopeLabel}</span>
-        </div>
-      )}
+      <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 px-1">
+        <BookOpenCheck size={12} className="shrink-0 text-indigo-500" />
+        <label className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-gray-500">
+          <span className="shrink-0">当前论文</span>
+          <select
+            value={paperScope.length > 1 ? '__multiple__' : (paperScope[0] || '')}
+            disabled={disabled || papers.length === 0}
+            onChange={(event) => onPaperScopeChange(event.target.value ? [event.target.value] : [])}
+            className="min-w-0 flex-1 truncate rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-700 outline-none focus:border-indigo-300 disabled:bg-gray-50 disabled:text-gray-400"
+            title="选择具体论文后，RAG 只检索该论文；选择全部论文时会跨库检索。"
+          >
+            <option value="">{papers.length ? `全部论文（${papers.length}）` : '尚未上传论文'}</option>
+            {paperScope.length > 1 && <option value="__multiple__" disabled>限定 {paperScope.length} 篇论文</option>}
+            {papers.map((paper) => <option key={paper.paper_id} value={paper.paper_id}>{paper.filename}</option>)}
+          </select>
+        </label>
+        <span className="hidden text-[10px] text-gray-400 sm:inline">说“这篇论文”前请选定</span>
+      </div>
       <div className="max-w-3xl mx-auto flex items-end gap-3 bg-gray-50 rounded-2xl border border-gray-200 px-4 py-2">
         <textarea
           ref={textareaRef}
