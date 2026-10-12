@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -16,6 +18,7 @@ from config import Config
 
 
 SETTINGS_PATH = Path("data/runtime_settings.json")
+LLM_SECRET_PATH = Path("data/llm_api_key")
 _LOCK = threading.RLock()
 
 
@@ -52,10 +55,47 @@ class MemorySettings(BaseModel):
     summarization_enabled: bool = True
 
 
+class LLMSettings(BaseModel):
+    provider: Literal["ollama", "openai_compatible"] = "ollama"
+    base_url: str = Field(min_length=8, max_length=500)
+    model: str = Field(min_length=1, max_length=200)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    fast_max_tokens: int = Field(default=1024, ge=64, le=32768)
+    deep_max_tokens: int = Field(default=4096, ge=64, le=65536)
+    reasoning_supported: bool = True
+
+    @model_validator(mode="after")
+    def validate_endpoint(self):
+        self.base_url = self.base_url.strip().rstrip("/")
+        self.model = self.model.strip()
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be a valid HTTP(S) endpoint")
+        if not self.model:
+            raise ValueError("model cannot be empty")
+        if self.deep_max_tokens < self.fast_max_tokens:
+            raise ValueError("deep_max_tokens must be greater than or equal to fast_max_tokens")
+        return self
+
+
 class RuntimeSettings(BaseModel):
     retrieval: RetrievalSettings
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    llm: LLMSettings = Field(default_factory=lambda: default_llm_settings())
+
+
+def default_llm_settings() -> LLMSettings:
+    is_ollama = Config.LLM_PROVIDER == "ollama"
+    return LLMSettings(
+        provider="ollama" if is_ollama else "openai_compatible",
+        base_url=Config.LLM_BASE_URL,
+        model=Config.LLM_MODEL,
+        temperature=Config.LLM_TEMPERATURE,
+        fast_max_tokens=Config.LLM_FAST_MAX_TOKENS,
+        deep_max_tokens=Config.LLM_MAX_TOKENS,
+        reasoning_supported=is_ollama,
+    )
 
 
 def default_settings() -> RuntimeSettings:
@@ -92,7 +132,45 @@ def save_runtime_settings(settings: RuntimeSettings) -> RuntimeSettings:
         return settings
 
 
+def get_llm_api_key(settings: RuntimeSettings | None = None) -> str:
+    active = settings or get_runtime_settings()
+    if active.llm.provider == "ollama":
+        return "ollama"
+    with _LOCK:
+        try:
+            secret = LLM_SECRET_PATH.read_text(encoding="utf-8").strip()
+        except OSError:
+            secret = ""
+    if secret:
+        return secret
+    return "" if Config.LLM_API_KEY == "ollama" else Config.LLM_API_KEY
+
+
+def save_llm_api_key(api_key: str) -> None:
+    secret = api_key.strip()
+    if not secret:
+        return
+    with _LOCK:
+        LLM_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = LLM_SECRET_PATH.with_suffix(".tmp")
+        temporary.write_text(secret, encoding="utf-8")
+        temporary.replace(LLM_SECRET_PATH)
+
+
+def clear_llm_api_key() -> None:
+    with _LOCK:
+        LLM_SECRET_PATH.unlink(missing_ok=True)
+
+
+def llm_api_key_configured(settings: RuntimeSettings | None = None) -> bool:
+    active = settings or get_runtime_settings()
+    if active.llm.provider == "ollama":
+        return False
+    return bool(get_llm_api_key(active))
+
+
 def reset_runtime_settings() -> RuntimeSettings:
     with _LOCK:
         SETTINGS_PATH.unlink(missing_ok=True)
+        LLM_SECRET_PATH.unlink(missing_ok=True)
         return default_settings()

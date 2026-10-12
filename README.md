@@ -68,6 +68,8 @@ instead of receiving only a fluent final answer.
 - **Multi-turn memory**: sliding window + LLM summary compression, persisted via Postgres checkpointer
 - **Persistent browser conversations**: the last active conversation is restored after a page refresh; completed turns remain in PostgreSQL/LangGraph checkpoints
 - **Selectable reasoning mode**: switch per question between `快速回答` (non-thinking, bounded output and deterministic evidence checks) and `深度思考` (full model reasoning, evidence repair, and semantic audit)
+- **Visible model management**: always show the active provider/model beside the composer; select installed Ollama models or configure an OpenAI-compatible endpoint from Settings without rebuilding containers
+- **Secret-safe API configuration**: API keys are written only to the ignored backend data volume and are never returned to the browser
 
 > Current ingestion scope: the knowledge-base upload pipeline accepts PDF papers. Academic discovery can fetch and import arXiv PDFs. General webpage URLs and source-code repositories are not yet ingested into the RAG index; the interface does not claim otherwise.
 - **SSE streaming** with source-level citations (paper, section, page)
@@ -187,6 +189,48 @@ Open the application at http://localhost:5173. The backend API and OpenAPI
 documentation are available at http://localhost:8000 and
 http://localhost:8000/docs.
 
+### Ways to use the agent
+
+RuleTrace Scholar has three implemented access paths. They use the same
+LangGraph workflow, PostgreSQL memory, Milvus evidence retrieval, and TRACE
+audit rather than separate demo logic.
+
+1. **Web application (recommended for most researchers)** — upload and inspect
+   papers, select the model, switch reasoning mode, and read evidence panels at
+   `http://localhost:5173`.
+2. **Command line** — useful from a terminal or an IDE task, with no extra
+   Python packages:
+
+   ```powershell
+   python .\scripts\ruletrace_chat.py "这篇论文的核心贡献是什么？"
+   python .\scripts\ruletrace_chat.py --deep --paper-id Explainable_Innovation_Engine_2026.pdf "审计实验结论"
+   ```
+
+3. **HTTP/SSE API** — another program or agent can upload PDFs, send questions,
+   continue a session, and consume citations/audit events through `/api/chat`.
+   Interactive schemas and request testing are available at
+   `http://localhost:8000/docs`.
+
+The repository does **not** currently ship a VS Code extension, Word add-in,
+browser extension, or MCP server. Those clients can be built on the documented
+HTTP API, but they are not presented as completed features.
+
+### Model selection
+
+Open **Settings → 模型与提供方**. The page shows the active provider and model.
+
+- **本地 Ollama** reads the models actually installed on the host, lets the
+  user select one or enter its tag manually, and reports whether a loaded model
+  is using CPU, GPU, or a mixture.
+- **OpenAI 兼容 API** accepts a base URL, deployment/model name, and API key, so
+  it can work with compatible hosted services or local servers such as vLLM and
+  LM Studio.
+- **测试当前连接** validates the real Ollama model manifest locally; for an
+  external compatible API it performs a minimal authenticated generation.
+  Saving applies the model to the next question without restarting.
+- The `端点支持深度推理参数` switch should be disabled when an API does not
+  implement `reasoning_effort`.
+
 ---
 
 ## API
@@ -207,7 +251,9 @@ http://localhost:8000/docs.
 | `GET` | `/api/inspection/papers` | Inspect uploaded papers, Milvus parent/child counts, node distributions, and RAG configuration |
 | `GET` | `/api/inspection/papers/:paper_id/chunks` | Page through the actual parent or child chunk text stored for RAG |
 | `GET` | `/api/inspection/sessions/:session_id/memory` | Inspect the persisted message window, compressed summary, scope, and latest query plan |
-| `GET`, `PUT`, `DELETE` | `/api/settings` | Read, validate/update, or restore runtime RAG, chunking, and memory settings |
+| `GET`, `PUT`, `DELETE` | `/api/settings` | Read, validate/update, or restore runtime model, RAG, chunking, and memory settings |
+| `GET` | `/api/settings/models/local` | List installed Ollama models and current CPU/GPU placement |
+| `POST` | `/api/settings/models/test` | Test the selected local or OpenAI-compatible model endpoint |
 | `POST` | `/api/settings/papers/:file_id/reindex` | Reparse and rebuild one paper using the current chunking settings |
 | `DELETE` | `/api/settings/memory/sessions/:session_id` | Reset one conversation checkpoint while retaining its session record |
 | `GET` | `/api/audit/sessions/:id/capsules` | List reproducible answer capsules |

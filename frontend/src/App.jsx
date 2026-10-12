@@ -8,7 +8,7 @@ import SettingsPanel from './components/SettingsPanel';
 import GuidePanel from './components/GuidePanel';
 import DiscoveryPanel from './components/DiscoveryPanel';
 import KnowledgePanel from './components/KnowledgePanel';
-import { fetchSessions, fetchHistory, deleteSession, streamChat } from './api';
+import { fetchSessions, fetchHistory, deleteSession, fetchRuntimeSettings, streamChat } from './api';
 
 const ACTIVE_SESSION_KEY = 'ruletrace-scholar.active-session';
 const THINKING_MODE_KEY = 'ruletrace-scholar.deep-thinking';
@@ -35,6 +35,7 @@ export default function App() {
   const [deepThinking, setDeepThinking] = useState(
     () => window.localStorage.getItem(THINKING_MODE_KEY) === 'true'
   );
+  const [modelProfile, setModelProfile] = useState(null);
   const [panel, setPanel] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const cancelRef = useRef(null);
@@ -72,6 +73,12 @@ export default function App() {
   }, [selectSession]);
 
   useEffect(() => { loadSessions({ restore: true }); }, [loadSessions]);
+
+  useEffect(() => {
+    fetchRuntimeSettings()
+      .then((data) => setModelProfile(data.model_status || null))
+      .catch(() => setModelProfile(null));
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -305,6 +312,7 @@ export default function App() {
               disabled={loading}
               scopeLabel={paperScope[0] || ''}
               deepThinking={deepThinking}
+              modelProfile={modelProfile}
               onDeepThinkingChange={(enabled) => {
                 setDeepThinking(enabled);
                 window.localStorage.setItem(THINKING_MODE_KEY, String(enabled));
@@ -339,7 +347,7 @@ export default function App() {
                 />
               )}
               {panel === 'knowledge' && <KnowledgePanel />}
-              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={loadSessions} onMemoryReset={() => setMessages([])} />}
+              {panel === 'settings' && <SettingsPanel currentSessionId={currentId} onCollectionCleared={loadSessions} onMemoryReset={() => setMessages([])} onSettingsSaved={(data) => setModelProfile(data.model_status || null)} />}
               </div>
             </div>
           )}

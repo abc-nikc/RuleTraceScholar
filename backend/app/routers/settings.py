@@ -3,16 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 from fastapi import APIRouter, HTTPException
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from config import Config
-from app.dependencies import get_checkpointer, get_pdf_parser, get_rag_integration, get_retriever
+from app.dependencies import (
+    clear_llm_cache,
+    get_checkpointer,
+    get_pdf_parser,
+    get_rag_integration,
+    get_retriever,
+)
 from app.runtime_settings import (
+    LLMSettings,
     RuntimeSettings,
+    clear_llm_api_key,
+    get_llm_api_key,
     get_runtime_settings,
+    llm_api_key_configured,
     reset_runtime_settings,
+    save_llm_api_key,
     save_runtime_settings,
 )
 from app.store import add_file, get_file, get_session
@@ -22,13 +38,38 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 _reindex_lock = asyncio.Lock()
 
 
+class SettingsUpdate(RuntimeSettings):
+    api_key: str | None = Field(default=None, max_length=4096)
+    clear_api_key: bool = False
+
+
+class ModelConnectionRequest(BaseModel):
+    llm: LLMSettings
+    api_key: str | None = Field(default=None, max_length=4096)
+
+
+def _ollama_api_root(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
+
+
 def _settings_response(settings: RuntimeSettings) -> dict:
     return {
         "settings": settings.model_dump(),
+        "model_status": {
+            "provider": settings.llm.provider,
+            "model": settings.llm.model,
+            "base_url": settings.llm.base_url,
+            "api_key_configured": llm_api_key_configured(settings),
+        },
         "effects": {
             "retrieval": "Applies to the next question without restarting.",
             "chunking": "Applies to new uploads; existing papers must be reindexed.",
             "memory": "Applies to subsequent turns; existing checkpoint content is retained.",
+            "llm": "Provider and model changes apply to the next question without restarting.",
         },
     }
 
@@ -45,8 +86,15 @@ async def read_settings():
 
 
 @router.put("")
-async def update_settings(settings: RuntimeSettings):
-    saved = save_runtime_settings(settings)
+async def update_settings(update: SettingsUpdate):
+    if update.clear_api_key:
+        clear_llm_api_key()
+    elif update.api_key:
+        save_llm_api_key(update.api_key)
+    saved = save_runtime_settings(RuntimeSettings.model_validate(
+        update.model_dump(exclude={"api_key", "clear_api_key"})
+    ))
+    clear_llm_cache()
     _clear_retrieval_cache()
     return _settings_response(saved)
 
@@ -54,8 +102,125 @@ async def update_settings(settings: RuntimeSettings):
 @router.delete("")
 async def restore_default_settings():
     restored = reset_runtime_settings()
+    clear_llm_cache()
     _clear_retrieval_cache()
     return _settings_response(restored)
+
+
+@router.get("/models/local")
+async def list_local_models():
+    settings = get_runtime_settings()
+    base_url = (
+        settings.llm.base_url
+        if settings.llm.provider == "ollama"
+        else Config.OLLAMA_BASE_URL
+    )
+    root = _ollama_api_root(base_url)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            tags_response, running_response = await asyncio.gather(
+                client.get(f"{root}/api/tags"),
+                client.get(f"{root}/api/ps"),
+            )
+            tags_response.raise_for_status()
+            running_response.raise_for_status()
+        running = {
+            item.get("name") or item.get("model"): item
+            for item in running_response.json().get("models", [])
+        }
+        models = []
+        for item in tags_response.json().get("models", []):
+            name = item.get("name") or item.get("model")
+            if not name:
+                continue
+            active = running.get(name, {})
+            total_size = int(active.get("size") or item.get("size") or 0)
+            vram_size = int(active.get("size_vram") or 0)
+            if not active:
+                processor = "not_loaded"
+            elif vram_size <= 0:
+                processor = "cpu"
+            elif total_size and vram_size >= total_size * 0.9:
+                processor = "gpu"
+            else:
+                processor = "mixed"
+            models.append({
+                "name": name,
+                "size": item.get("size", 0),
+                "parameter_size": (item.get("details") or {}).get("parameter_size", ""),
+                "quantization": (item.get("details") or {}).get("quantization_level", ""),
+                "loaded": bool(active),
+                "processor": processor,
+                "size_vram": vram_size,
+                "context_length": active.get("context_length"),
+            })
+        return {"ok": True, "endpoint": root, "models": models}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"无法连接本地 Ollama（{root}）：{exc}",
+        ) from exc
+
+
+@router.post("/models/test")
+async def test_model_connection(request: ModelConnectionRequest):
+    started = time.perf_counter()
+    if request.llm.provider == "ollama":
+        root = _ollama_api_root(request.llm.base_url)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(
+                    f"{root}/api/show", json={"model": request.llm.model}
+                )
+                response.raise_for_status()
+            manifest = response.json()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Ollama 模型校验失败：{exc}",
+            ) from exc
+        details = manifest.get("details") or {}
+        return {
+            "ok": True,
+            "model": request.llm.model,
+            "provider": request.llm.provider,
+            "latency_seconds": round(time.perf_counter() - started, 2),
+            "response_preview": " / ".join(
+                item for item in (
+                    details.get("family", ""),
+                    details.get("parameter_size", ""),
+                    details.get("quantization_level", ""),
+                ) if item
+            ),
+        }
+
+    key_settings = get_runtime_settings().model_copy(update={"llm": request.llm})
+    api_key = request.api_key or get_llm_api_key(key_settings)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请填写 API Key，或先保存已配置的密钥。")
+
+    options = dict(
+        base_url=request.llm.base_url,
+        model=request.llm.model,
+        api_key=api_key,
+        temperature=0,
+        max_tokens=16,
+        timeout=60,
+        max_retries=0,
+    )
+    if request.llm.reasoning_supported:
+        options["reasoning_effort"] = "none"
+    try:
+        response = await ChatOpenAI(**options).ainvoke("Reply with OK only.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"模型连接测试失败：{exc}") from exc
+    return {
+        "ok": True,
+        "model": request.llm.model,
+        "provider": request.llm.provider,
+        "latency_seconds": round(time.perf_counter() - started, 2),
+        "response_preview": str(response.content)[:100],
+    }
 
 
 @router.post("/papers/{file_id}/reindex")

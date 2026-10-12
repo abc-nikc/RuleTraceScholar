@@ -14,7 +14,7 @@ from rag.retrieval import Retriever
 from rag.citation import CitationExtractor
 from rag.integration import PDFParser, RAGIntegration
 from app.store import close_store, initialize_store
-from app.runtime_settings import get_runtime_settings
+from app.runtime_settings import get_llm_api_key, get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +58,7 @@ class RetrieverTool:
         )
 
 
-_llm_fast: ChatOpenAI | None = None
-_llm_deep: ChatOpenAI | None = None
+_llm_clients: dict[tuple, ChatOpenAI] = {}
 _retriever: Retriever | None = None
 _retriever_tool: RetrieverTool | None = None
 _pdf_parser: PDFParser | None = None
@@ -68,9 +67,40 @@ _checkpointer: AsyncPostgresSaver | None = None
 
 
 def get_llm(thinking: bool | None = None) -> ChatOpenAI:
-    """Return the selectable Ollama reasoning mode for the current request."""
+    """Return a cached client for the model/provider selected in the UI."""
+    settings = get_runtime_settings()
+    llm_settings = settings.llm
     use_deep = Config.LLM_THINKING if thinking is None else thinking
-    return (_llm_deep if use_deep else _llm_fast)  # type: ignore
+    api_key = get_llm_api_key(settings)
+    cache_key = (
+        llm_settings.provider,
+        llm_settings.base_url,
+        llm_settings.model,
+        api_key,
+        llm_settings.temperature,
+        llm_settings.fast_max_tokens,
+        llm_settings.deep_max_tokens,
+        llm_settings.reasoning_supported,
+        use_deep,
+    )
+    if cache_key not in _llm_clients:
+        options = dict(
+            base_url=llm_settings.base_url,
+            model=llm_settings.model,
+            api_key=api_key or "not-configured",
+            temperature=llm_settings.temperature,
+            max_tokens=(
+                llm_settings.deep_max_tokens if use_deep else llm_settings.fast_max_tokens
+            ),
+        )
+        if llm_settings.reasoning_supported:
+            options["reasoning_effort"] = "high" if use_deep else "none"
+        _llm_clients[cache_key] = ChatOpenAI(**options)
+    return _llm_clients[cache_key]
+
+
+def clear_llm_cache() -> None:
+    _llm_clients.clear()
 
 
 def get_retriever() -> Retriever:
@@ -95,32 +125,13 @@ def get_checkpointer() -> AsyncPostgresSaver:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _llm_fast, _llm_deep, _retriever, _retriever_tool, _pdf_parser, _rag_integration, _checkpointer
+    global _retriever, _retriever_tool, _pdf_parser, _rag_integration, _checkpointer
 
     logger.info("Starting up — loading models …")
 
     await _ensure_postgres_db()
     selected_store = initialize_store(Config.POSTGRES_URI, Config.METADATA_BACKEND)
     logger.info("Selected metadata backend: %s", selected_store)
-
-    common_llm_options = dict(
-        base_url=Config.LLM_BASE_URL,
-        model=Config.LLM_MODEL,
-        api_key=Config.LLM_API_KEY,
-        temperature=Config.LLM_TEMPERATURE,
-    )
-    # Ollama's OpenAI-compatible chat endpoint exposes thinking through
-    # reasoning_effort: "none" requests non-thinking and "high" enables it.
-    _llm_fast = ChatOpenAI(
-        **common_llm_options,
-        max_tokens=Config.LLM_FAST_MAX_TOKENS,
-        reasoning_effort="none",
-    )
-    _llm_deep = ChatOpenAI(
-        **common_llm_options,
-        max_tokens=Config.LLM_MAX_TOKENS,
-        reasoning_effort="high",
-    )
 
     _retriever = Retriever(
         embedding_model=Config.EMBEDDING_MODEL,
@@ -131,7 +142,7 @@ async def lifespan(app: FastAPI):
     )
     _retriever_tool = RetrieverTool(_retriever)
 
-    _pdf_parser = PDFParser(llm=_llm_fast)
+    _pdf_parser = PDFParser(llm=get_llm(False))
     _rag_integration = RAGIntegration(
         embedding_model=Config.EMBEDDING_MODEL,
         milvus_uri=Config.MILVUS_URI,

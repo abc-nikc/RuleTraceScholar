@@ -116,15 +116,33 @@ export async function fetchRuntimeSettings() {
   return data;
 }
 
-export async function updateRuntimeSettings(settings) {
+export async function updateRuntimeSettings(settings, apiKey = '', clearApiKey = false) {
   const res = await fetch(`${BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings),
+    body: JSON.stringify({
+      ...settings,
+      ...(apiKey ? { api_key: apiKey } : {}),
+      clear_api_key: clearApiKey,
+    }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail?.[0]?.msg || data.detail || 'Settings update failed');
   return data;
+}
+
+export async function fetchLocalModels() {
+  const res = await fetch(`${BASE}/settings/models/local`);
+  return jsonOrThrow(res, '无法读取本地 Ollama 模型');
+}
+
+export async function testModelConnection(llm, apiKey = '') {
+  const res = await fetch(`${BASE}/settings/models/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ llm, ...(apiKey ? { api_key: apiKey } : {}) }),
+  });
+  return jsonOrThrow(res, '模型连接测试失败');
 }
 
 export async function resetRuntimeSettings() {

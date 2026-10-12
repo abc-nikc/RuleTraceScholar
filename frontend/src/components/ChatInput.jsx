@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
-import { Send, BookOpenCheck, Brain, Zap } from 'lucide-react';
+import { Send, BookOpenCheck, Brain, Bot, Zap } from 'lucide-react';
 
-export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, onDeepThinkingChange }) {
+export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, onDeepThinkingChange, modelProfile }) {
   const [text, setText] = useState('');
   const textareaRef = useRef(null);
 
@@ -28,7 +28,7 @@ export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, 
 
   return (
     <div className="border-t border-gray-200 bg-white px-4 py-3">
-      <div className="mx-auto mb-2 flex max-w-3xl items-center justify-between gap-3 px-1">
+      <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center justify-between gap-2 px-1">
         <button
           type="button"
           disabled={disabled}
@@ -43,9 +43,17 @@ export default function ChatInput({ onSend, disabled, scopeLabel, deepThinking, 
           {deepThinking ? <Brain size={12} /> : <Zap size={12} />}
           {deepThinking ? '深度思考' : '快速回答'}
         </button>
-        <span className="text-[10px] text-gray-400">
-          {deepThinking ? '质量优先 · 响应较慢' : '速度优先 · 可随时切换'}
-        </span>
+        <div className="flex min-w-0 items-center gap-2">
+          {modelProfile?.model && (
+            <span className="inline-flex max-w-[14rem] items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[10px] text-slate-600" title={`${modelProfile.provider} · ${modelProfile.base_url}`}>
+              <Bot size={11} className="shrink-0" />
+              <span className="truncate">{modelProfile.provider === 'ollama' ? '本地' : 'API'} · {modelProfile.model}</span>
+            </span>
+          )}
+          <span className="text-[10px] text-gray-400">
+            {deepThinking ? '质量优先 · 响应较慢' : '速度优先 · 可随时切换'}
+          </span>
+        </div>
       </div>
       {scopeLabel && (
         <div className="mx-auto mb-2 flex max-w-3xl items-center gap-1.5 px-1 text-[11px] text-indigo-600">

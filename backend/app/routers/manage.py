@@ -3,11 +3,14 @@
 import logging
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 from fastapi import APIRouter
 from pymilvus import connections, utility
 
 from config import Config
+from app.runtime_settings import get_llm_api_key, get_runtime_settings
 from app.store import clear_all_files, store_backend
 
 logger = logging.getLogger(__name__)
@@ -62,11 +65,32 @@ async def health():
         pass
 
     try:
-        from app.dependencies import get_llm
-        llm = get_llm()
-        if llm:
-            resp = llm.invoke("ping")
-            status["llm"] = bool(resp.content)
+        settings = get_runtime_settings()
+        llm = settings.llm
+        headers = {}
+        if llm.provider == "ollama":
+            parsed = urlparse(llm.base_url.rstrip("/"))
+            path = parsed.path.rstrip("/")
+            if path.endswith("/v1"):
+                path = path[:-3]
+            root = urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
+            url = f"{root}/api/tags"
+        else:
+            url = f"{llm.base_url.rstrip('/')}/models"
+            api_key = get_llm_api_key(settings)
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+        if llm.provider == "ollama":
+            names = {
+                item.get("name") or item.get("model")
+                for item in response.json().get("models", [])
+            }
+            status["llm"] = llm.model in names
+        else:
+            status["llm"] = True
     except Exception:
         pass
 

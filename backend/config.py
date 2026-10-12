@@ -33,6 +33,11 @@ class Config:
     LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
     LLM_MODEL = os.getenv("LLM_MODEL", "qwen3:32b")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
+    LLM_PROVIDER = os.getenv(
+        "LLM_PROVIDER",
+        "ollama" if "11434" in LLM_BASE_URL else "openai_compatible",
+    )
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434/v1")
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
     LLM_FAST_MAX_TOKENS = int(os.getenv("LLM_FAST_MAX_TOKENS", "1024"))

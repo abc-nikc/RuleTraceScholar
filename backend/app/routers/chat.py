@@ -224,7 +224,8 @@ async def _stream_response(
             sub_query_count=sub_query_count,
             repair=repair,
             runtime={
-                "llm_model": Config.LLM_MODEL,
+                "llm_provider": runtime_settings.llm.provider,
+                "llm_model": runtime_settings.llm.model,
                 "thinking_mode": "deep" if thinking else "fast",
                 "embedding_model": Config.EMBEDDING_MODEL,
                 "reranker_model": Config.RERANKER_MODEL,
