@@ -42,7 +42,7 @@ export async function uploadFiles(files) {
   const form = new FormData();
   for (const f of files) form.append('files', f);
   const res = await fetch(`${BASE}/files/upload`, { method: 'POST', body: form });
-  return res.json();
+  return jsonOrThrow(res, '论文上传失败，请确认 PDF 不超过 50 MB，并检查后端是否已完成启动');
 }
 
 export async function fetchFiles() {

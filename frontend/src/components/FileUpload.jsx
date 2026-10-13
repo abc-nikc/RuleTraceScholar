@@ -19,7 +19,7 @@ export default function FileUpload({ onUploaded, onAnalyze, disabled }) {
       setResults(res.files || []);
       if (onUploaded) onUploaded(res.files || []);
     } catch (err) {
-      setResults([{ filename: 'Upload failed', status: 'error', detail: err.message }]);
+      setResults([{ filename: '上传失败', status: 'error', detail: err.message }]);
     }
     setUploading(false);
   };
@@ -55,8 +55,9 @@ export default function FileUpload({ onUploaded, onAnalyze, disabled }) {
           <Upload size={24} className="mx-auto text-gray-400" />
         )}
         <p className="text-sm text-gray-500 mt-2">
-          {uploading ? 'Processing...' : 'Drop PDF files here or click to browse'}
+          {uploading ? '正在解析、切分并建立 RAG 索引，请勿关闭页面…' : '拖入 PDF，或点击选择论文'}
         </p>
+        <p className="mt-1 text-[11px] text-gray-400">支持多篇 PDF；单篇最大 50 MB</p>
       </div>
 
       {results.length > 0 && (
@@ -68,7 +69,7 @@ export default function FileUpload({ onUploaded, onAnalyze, disabled }) {
               <div className="flex items-center gap-2">
                 <FileText size={13} />
                 <span className="truncate flex-1">{r.filename}</span>
-                {r.status === 'ok' ? <span>{r.chunk_count} chunks</span> : <span>{r.detail}</span>}
+                {r.status === 'ok' ? <span>{r.chunk_count} 个知识块</span> : <span>{r.detail}</span>}
               </div>
               {r.status === 'ok' && (
                 <div className="mt-2 grid grid-cols-1 gap-1.5 border-t border-green-100 pt-2">
